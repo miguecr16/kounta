@@ -39,6 +39,23 @@ export interface Customer {
   created_at?: string;
 }
 
+export interface TaxBreakdown {
+  country?: CountryCode;
+  // Colombia (CO)
+  iva_total?: number;
+  retefuente_enabled?: boolean;
+  retefuente_rate?: number;
+  retefuente_amount?: number;
+  reteica_enabled?: boolean;
+  reteica_rate?: number;
+  reteica_amount?: number;
+  total_retentions?: number;
+  // United States (US)
+  sales_tax_rate?: number;
+  sales_tax_amount?: number;
+  line_taxes_total?: number;
+}
+
 export interface Invoice {
   id: string;
   company_id: string;
@@ -47,10 +64,13 @@ export interface Invoice {
   status: InvoiceStatus;
   issue_date: string;
   due_date: string;
+  currency: string;
+  exchange_rate_to_base?: number;
   subtotal: number;
   tax_total: number;
   total: number;
-  currency: string;
+  tax_breakdown?: TaxBreakdown | null;
+  created_by?: string | null;
   created_at?: string;
   customer?: Customer;
   items?: InvoiceItem[];

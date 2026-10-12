@@ -9,6 +9,7 @@ export async function middleware(request: NextRequest) {
   const isProtectedPage =
     pathname.startsWith('/dashboard') ||
     pathname.startsWith('/customers') ||
+    pathname.startsWith('/invoices') ||
     pathname.startsWith('/onboarding');
 
   if (!user && isProtectedPage) {

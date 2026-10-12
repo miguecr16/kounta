@@ -44,7 +44,7 @@ export function Header({ title = 'Resumen Contable', subtitle, onNewInvoiceClick
           </button>
         ) : (
           <Link
-            href="/dashboard/invoices"
+            href="/invoices/new"
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-white text-xs font-medium tracking-tight shadow-xs transition-all"
           >
             <Plus className="w-3.5 h-3.5" />

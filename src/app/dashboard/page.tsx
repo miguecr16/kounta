@@ -112,7 +112,6 @@ export default function DashboardPage() {
       <Header
         title="Dashboard Financiero"
         subtitle={`Empresa activa: ${activeCompany?.name || ''} · ${activeCompany?.legal_name || ''}`}
-        onNewInvoiceClick={() => setIsInvoiceModalOpen(true)}
       />
 
       <main className="p-6 max-w-7xl w-full mx-auto space-y-6">
@@ -213,16 +212,15 @@ export default function DashboardPage() {
                 <p className="text-[11px] text-zinc-500">Últimos comprobantes emitidos en {activeCompany?.name}</p>
               </div>
               <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setIsInvoiceModalOpen(true)}
-                  className="px-2.5 py-1 text-xs font-medium bg-zinc-900 hover:bg-zinc-800 text-white rounded-lg flex items-center gap-1 transition-all cursor-pointer shadow-xs"
+                <Link
+                  href="/invoices/new"
+                  className="px-2.5 py-1 text-xs font-medium bg-zinc-900 hover:bg-zinc-800 text-white rounded-lg flex items-center gap-1 transition-all shadow-xs"
                 >
                   <Plus className="w-3 h-3" />
                   <span>Emitir</span>
-                </button>
+                </Link>
                 <Link
-                  href="/dashboard/invoices"
+                  href="/invoices"
                   className="text-xs font-medium text-zinc-500 hover:text-zinc-900 px-2 py-1 transition-colors"
                 >
                   Ver todas →
@@ -245,14 +243,13 @@ export default function DashboardPage() {
                 <p className="text-xs text-zinc-500 mt-1 max-w-sm">
                   Crea tu primera factura para comenzar a registrar los ingresos y cuentas por cobrar de la empresa.
                 </p>
-                <button
-                  type="button"
-                  onClick={() => setIsInvoiceModalOpen(true)}
-                  className="mt-4 px-4 py-2 text-xs font-medium bg-zinc-900 hover:bg-zinc-800 text-white rounded-lg transition-all flex items-center gap-1.5 cursor-pointer shadow-xs"
+                <Link
+                  href="/invoices/new"
+                  className="mt-4 px-4 py-2 text-xs font-medium bg-zinc-900 hover:bg-zinc-800 text-white rounded-lg transition-all flex items-center gap-1.5 shadow-xs"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   <span>Crear primera factura</span>
-                </button>
+                </Link>
               </div>
             ) : (
               <div className="overflow-x-auto">

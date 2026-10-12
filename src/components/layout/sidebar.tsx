@@ -33,8 +33,8 @@ export function Sidebar() {
     },
     {
       name: 'Facturas',
-      href: '/dashboard/invoices',
-      matchPaths: ['/dashboard/invoices', '/invoices'],
+      href: '/invoices',
+      matchPaths: ['/invoices', '/invoices/new', '/dashboard/invoices', '/dashboard/invoices/new'],
       icon: Receipt,
     },
     {
