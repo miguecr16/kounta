@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useAuth } from '@/context/auth-context';
+import { usePermissions } from '@/hooks/use-permissions';
 import {
   LayoutDashboard,
   Receipt,
@@ -22,6 +23,7 @@ export function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const { user, activeCompany, activeRole, companies, switchCompany, signOut } = useAuth();
+  const { canManageSettings } = usePermissions();
   const [companyDropdownOpen, setCompanyDropdownOpen] = useState(false);
 
   const navigation = [
@@ -43,13 +45,19 @@ export function Sidebar() {
       matchPaths: ['/customers', '/dashboard/customers'],
       icon: Users,
     },
-    // Only visible for ADMIN
-    ...(activeRole === 'ADMIN'
+    // Only visible for ADMIN (restricted from WORKER)
+    ...(canManageSettings
       ? [
           {
             name: 'Configuración',
-            href: '/dashboard/settings',
-            matchPaths: ['/dashboard/settings', '/settings'],
+            href: '/settings/general',
+            matchPaths: [
+              '/settings',
+              '/settings/general',
+              '/settings/team',
+              '/settings/billing',
+              '/dashboard/settings',
+            ],
             icon: Settings,
           },
         ]

@@ -23,9 +23,11 @@ import { CreateInvoiceModal } from '@/components/modals/create-invoice-modal';
 import { CreateCustomerModal } from '@/components/modals/create-customer-modal';
 import { Toast, ToastMessage } from '@/components/ui/toast';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 
 export default function DashboardPage() {
   const { activeCompany, activeRole } = useAuth();
+  const router = useRouter();
   const supabase = createClient();
 
   const [invoices, setInvoices] = useState<Invoice[]>([]);
@@ -34,6 +36,21 @@ export default function DashboardPage() {
   const [isInvoiceModalOpen, setIsInvoiceModalOpen] = useState(false);
   const [isCustomerModalOpen, setIsCustomerModalOpen] = useState(false);
   const [toast, setToast] = useState<ToastMessage | null>(null);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('error') === 'access_denied') {
+        setToast({
+          id: String(Date.now()),
+          type: 'error',
+          title: 'Acceso denegado',
+          description: 'No tienes permisos de administrador (ADMIN) para acceder a Configuración.',
+        });
+        router.replace('/dashboard', { scroll: false });
+      }
+    }
+  }, [router]);
 
   const loadDashboardData = useCallback(async () => {
     if (!activeCompany) return;

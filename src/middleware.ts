@@ -10,6 +10,7 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith('/dashboard') ||
     pathname.startsWith('/customers') ||
     pathname.startsWith('/invoices') ||
+    pathname.startsWith('/settings') ||
     pathname.startsWith('/onboarding');
 
   if (!user && isProtectedPage) {

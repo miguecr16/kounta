@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
 import { Building2, ArrowRight, Loader2, CheckCircle2, AlertCircle, ShieldCheck } from 'lucide-react';
+import { CompanyRole } from '@/types/database';
 
 export default function AuthPage() {
   const [mode, setMode] = useState<'signin' | 'signup'>('signin');
@@ -13,9 +14,31 @@ export default function AuthPage() {
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successNotice, setSuccessNotice] = useState<string | null>(null);
+  const [inviteCompanyId, setInviteCompanyId] = useState<string | null>(null);
+  const [inviteRole, setInviteRole] = useState<CompanyRole>('WORKER');
 
   const supabase = createClient();
   const router = useRouter();
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const invitedCo = params.get('invite_company');
+      const invitedRole = params.get('role');
+      const invitedEmail = params.get('email');
+
+      if (invitedCo) {
+        setInviteCompanyId(invitedCo);
+        setMode('signup');
+      }
+      if (invitedRole === 'ADMIN' || invitedRole === 'WORKER') {
+        setInviteRole(invitedRole);
+      }
+      if (invitedEmail) {
+        setEmail(invitedEmail);
+      }
+    }
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -40,6 +63,18 @@ export default function AuthPage() {
         }
 
         if (data.user) {
+          if (inviteCompanyId) {
+            try {
+              await supabase.from('company_members').insert({
+                company_id: inviteCompanyId,
+                user_id: data.user.id,
+                role: inviteRole,
+              });
+            } catch {
+              // Ignore if already a member or RLS blocks
+            }
+          }
+
           // Check if user has companies
           const { data: memberRows } = await supabase
             .from('company_members')
@@ -87,6 +122,22 @@ export default function AuthPage() {
             });
           } catch (e) {
             console.log('User table sync note:', e);
+          }
+
+          if (inviteCompanyId && data.user) {
+            try {
+              const { error: memberErr } = await supabase.from('company_members').insert({
+                company_id: inviteCompanyId,
+                user_id: data.user.id,
+                role: inviteRole,
+              });
+              if (!memberErr) {
+                router.push('/dashboard');
+                return;
+              }
+            } catch {
+              // Fallback to onboarding if RLS requires admin direct insert
+            }
           }
 
           router.push('/onboarding');
