@@ -35,6 +35,7 @@ export interface Customer {
   name: string;
   tax_id: string;
   email: string;
+  billing_address?: string | null;
   created_at?: string;
 }
 

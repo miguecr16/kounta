@@ -13,7 +13,6 @@ import {
   ChevronDown,
   Plus,
   Shield,
-  Building2,
   Check,
   Briefcase
 } from 'lucide-react';
@@ -29,16 +28,19 @@ export function Sidebar() {
     {
       name: 'Dashboard',
       href: '/dashboard',
+      matchPaths: ['/dashboard'],
       icon: LayoutDashboard,
     },
     {
       name: 'Facturas',
       href: '/dashboard/invoices',
+      matchPaths: ['/dashboard/invoices', '/invoices'],
       icon: Receipt,
     },
     {
       name: 'Clientes',
-      href: '/dashboard/customers',
+      href: '/customers',
+      matchPaths: ['/customers', '/dashboard/customers'],
       icon: Users,
     },
     // Only visible for ADMIN
@@ -47,6 +49,7 @@ export function Sidebar() {
           {
             name: 'Configuración',
             href: '/dashboard/settings',
+            matchPaths: ['/dashboard/settings', '/settings'],
             icon: Settings,
           },
         ]
@@ -71,7 +74,7 @@ export function Sidebar() {
         <button
           type="button"
           onClick={() => setCompanyDropdownOpen(!companyDropdownOpen)}
-          className="w-full flex items-center justify-between p-2 rounded-lg bg-zinc-50 border border-zinc-200/70 hover:bg-zinc-100/70 hover:border-zinc-300 transition-all text-left group"
+          className="w-full flex items-center justify-between p-2 rounded-lg bg-zinc-50 border border-zinc-200/70 hover:bg-zinc-100/70 hover:border-zinc-300 transition-all text-left group cursor-pointer"
         >
           <div className="flex items-center gap-2.5 min-w-0">
             <span className="text-base shrink-0">
@@ -116,7 +119,7 @@ export function Sidebar() {
                         setCompanyDropdownOpen(false);
                       }}
                       className={cn(
-                        'w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-xs transition-colors text-left',
+                        'w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-xs transition-colors text-left cursor-pointer',
                         isActive
                           ? 'bg-zinc-100 text-zinc-900 font-medium'
                           : 'text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900'
@@ -144,7 +147,7 @@ export function Sidebar() {
                     setCompanyDropdownOpen(false);
                     router.push('/onboarding');
                   }}
-                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-indigo-600 hover:bg-indigo-50 font-medium transition-colors"
+                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-indigo-600 hover:bg-indigo-50 font-medium transition-colors cursor-pointer"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   <span>Crear nueva empresa</span>
@@ -161,7 +164,7 @@ export function Sidebar() {
           Módulos
         </div>
         {navigation.map((item) => {
-          const isActive = pathname === item.href;
+          const isActive = item.matchPaths.includes(pathname);
           const Icon = item.icon;
           return (
             <Link
@@ -211,7 +214,7 @@ export function Sidebar() {
             type="button"
             onClick={signOut}
             title="Cerrar sesión"
-            className="p-1.5 rounded-md text-zinc-400 hover:text-zinc-700 hover:bg-zinc-200/60 transition-colors"
+            className="p-1.5 rounded-md text-zinc-400 hover:text-zinc-700 hover:bg-zinc-200/60 transition-colors cursor-pointer"
           >
             <LogOut className="w-4 h-4" />
           </button>

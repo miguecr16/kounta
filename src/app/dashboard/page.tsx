@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { CreateInvoiceModal } from '@/components/modals/create-invoice-modal';
 import { CreateCustomerModal } from '@/components/modals/create-customer-modal';
+import { Toast, ToastMessage } from '@/components/ui/toast';
 import Link from 'next/link';
 
 export default function DashboardPage() {
@@ -32,6 +33,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [isInvoiceModalOpen, setIsInvoiceModalOpen] = useState(false);
   const [isCustomerModalOpen, setIsCustomerModalOpen] = useState(false);
+  const [toast, setToast] = useState<ToastMessage | null>(null);
 
   const loadDashboardData = useCallback(async () => {
     if (!activeCompany) return;
@@ -364,13 +366,13 @@ export default function DashboardPage() {
                 </div>
               )}
 
-              {customers.length > 5 && (
+              {customers.length > 0 && (
                 <div className="mt-3 pt-3 border-t border-zinc-100 text-center">
                   <Link
-                    href="/dashboard/customers"
+                    href="/customers"
                     className="text-xs text-indigo-600 hover:text-indigo-700 font-medium"
                   >
-                    Ver todos los {customers.length} clientes →
+                    Gestionar todos los clientes ({customers.length}) →
                   </Link>
                 </div>
               )}
@@ -424,10 +426,18 @@ export default function DashboardPage() {
       <CreateCustomerModal
         isOpen={isCustomerModalOpen}
         onClose={() => setIsCustomerModalOpen(false)}
-        onCustomerCreated={() => {
-          loadDashboardData();
+        onCustomerCreated={(newCustomer) => {
+          setCustomers((prev) => [newCustomer, ...prev]);
+          setToast({
+            id: String(Date.now()),
+            type: 'success',
+            title: 'Cliente guardado exitosamente',
+            description: `${newCustomer.name} ha sido agregado al directorio.`,
+          });
         }}
       />
+
+      <Toast toast={toast} onDismiss={() => setToast(null)} />
     </>
   );
 }
