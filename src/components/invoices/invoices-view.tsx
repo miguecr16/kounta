@@ -54,11 +54,21 @@ export function InvoicesView() {
   // Toast
   const [toast, setToast] = useState<ToastMessage | null>(null);
 
-  // Check URL query param for toast after redirect from /invoices/new
+  // Check URL query param for toast after redirect from /invoices/new or unauthorized access
   useEffect(() => {
     const createdType = searchParams.get('created');
     const invoiceNum = searchParams.get('number');
-    if (createdType === 'issued') {
+    const errorType = searchParams.get('error');
+
+    if (errorType === 'unauthorized') {
+      setToast({
+        id: String(Date.now()),
+        type: 'error',
+        title: 'Acceso no autorizado',
+        description: 'No tienes permisos para acceder a esa factura o no pertenece a tu empresa activa.',
+      });
+      router.replace('/invoices', { scroll: false });
+    } else if (createdType === 'issued') {
       setToast({
         id: String(Date.now()),
         type: 'success',
@@ -456,7 +466,7 @@ export function InvoicesView() {
                     return (
                       <tr
                         key={inv.id}
-                        onClick={() => setSelectedInvoice(inv)}
+                        onClick={() => router.push(`/invoices/${inv.id}`)}
                         className="hover:bg-zinc-50/80 transition-colors cursor-pointer group"
                       >
                         {/* Col 1: N° Factura */}
@@ -523,15 +533,14 @@ export function InvoicesView() {
                           onClick={(e) => e.stopPropagation()}
                         >
                           <div className="inline-flex items-center justify-end gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => setSelectedInvoice(inv)}
-                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100 transition-colors cursor-pointer"
-                              title="Ver detalle de factura"
+                            <Link
+                              href={`/invoices/${inv.id}`}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium text-zinc-700 bg-white hover:bg-zinc-100 border border-zinc-200/80 transition-colors"
+                              title="Ver factura completa y descargar PDF"
                             >
                               <Eye className="w-3.5 h-3.5 text-zinc-500" />
-                              <span>Detalle</span>
-                            </button>
+                              <span>Ver / PDF</span>
+                            </Link>
 
                             {inv.status === 'ISSUED' && (
                               <button

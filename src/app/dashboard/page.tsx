@@ -272,7 +272,12 @@ export default function DashboardPage() {
                       return (
                         <tr key={inv.id} className="hover:bg-zinc-50/60 transition-colors">
                           <td className="py-3 px-4 font-mono-numbers font-medium text-zinc-900">
-                            {inv.invoice_number}
+                            <Link
+                              href={`/invoices/${inv.id}`}
+                              className="hover:text-indigo-600 transition-colors"
+                            >
+                              {inv.invoice_number}
+                            </Link>
                           </td>
                           <td className="py-3 px-4 text-zinc-700 truncate max-w-[150px]">
                             {customerName}

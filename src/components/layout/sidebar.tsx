@@ -164,7 +164,10 @@ export function Sidebar() {
           Módulos
         </div>
         {navigation.map((item) => {
-          const isActive = item.matchPaths.includes(pathname);
+          const isActive =
+            item.matchPaths.includes(pathname) ||
+            (item.href === '/invoices' &&
+              (pathname.startsWith('/invoices/') || pathname.startsWith('/dashboard/invoices/')));
           const Icon = item.icon;
           return (
             <Link
