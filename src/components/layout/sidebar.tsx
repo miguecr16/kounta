@@ -9,6 +9,7 @@ import {
   LayoutDashboard,
   Receipt,
   Users,
+  BarChart3,
   Settings,
   LogOut,
   ChevronDown,
@@ -23,7 +24,7 @@ export function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const { user, activeCompany, activeRole, companies, switchCompany, signOut } = useAuth();
-  const { canManageSettings } = usePermissions();
+  const { canManageSettings, canViewReports } = usePermissions();
   const [companyDropdownOpen, setCompanyDropdownOpen] = useState(false);
 
   const navigation = [
@@ -45,6 +46,16 @@ export function Sidebar() {
       matchPaths: ['/customers', '/dashboard/customers'],
       icon: Users,
     },
+    ...(canViewReports
+      ? [
+          {
+            name: 'Reportes',
+            href: '/reports',
+            matchPaths: ['/reports', '/dashboard/reports'],
+            icon: BarChart3,
+          },
+        ]
+      : []),
     // Only visible for ADMIN (restricted from WORKER)
     ...(canManageSettings
       ? [

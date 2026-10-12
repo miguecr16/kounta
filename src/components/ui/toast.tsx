@@ -5,7 +5,7 @@ import { CheckCircle2, AlertCircle, X } from 'lucide-react';
 
 export interface ToastMessage {
   id: string;
-  type?: 'success' | 'error';
+  type?: 'success' | 'error' | 'info';
   title: string;
   description?: string;
 }
