@@ -3,6 +3,15 @@ export type CompanyRole = 'ADMIN' | 'WORKER';
 export type InvoiceStatus = 'DRAFT' | 'ISSUED' | 'PARTIAL_PAID' | 'PAID' | 'VOID';
 export type SubscriptionTier = 'starter' | 'growth' | 'enterprise';
 export type SubscriptionStatus = 'trialing' | 'active' | 'past_due' | 'canceled';
+export type ExpenseCategory =
+  | 'PAYROLL'
+  | 'RENT'
+  | 'UTILITIES'
+  | 'SOFTWARE'
+  | 'MARKETING'
+  | 'OFFICE_SUPPLIES'
+  | 'TAXES'
+  | 'OTHER';
 
 export interface Company {
   id: string;
@@ -92,4 +101,19 @@ export interface InvoiceItem {
   unit_price: number;
   tax_rate: number;
   amount: number;
+}
+
+export interface Expense {
+  id: string;
+  company_id: string;
+  vendor_name: string;
+  category: ExpenseCategory;
+  expense_date: string;
+  amount: number;
+  currency: string;
+  tax_deductible?: number | null;
+  receipt_url?: string | null;
+  notes?: string | null;
+  created_by?: string | null;
+  created_at?: string;
 }

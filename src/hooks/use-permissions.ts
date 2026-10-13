@@ -10,6 +10,7 @@ export interface PermissionsState {
   canManageSettings: boolean;
   canManageTeam: boolean;
   canVoidInvoices: boolean;
+  canDeleteExpenses: boolean;
   canManageBilling: boolean;
   canViewReports: boolean;
   canViewFullTaxReport: boolean;
@@ -34,6 +35,7 @@ export function usePermissions(): PermissionsState {
     canManageSettings: isAdmin,
     canManageTeam: isAdmin,
     canVoidInvoices: isAdmin,
+    canDeleteExpenses: isAdmin,
     canManageBilling: isAdmin,
     canViewReports: isAdmin || isWorker,
     canViewFullTaxReport: isAdmin,

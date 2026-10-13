@@ -8,6 +8,7 @@ import { usePermissions } from '@/hooks/use-permissions';
 import {
   LayoutDashboard,
   Receipt,
+  Wallet,
   Users,
   BarChart3,
   Settings,
@@ -39,6 +40,12 @@ export function Sidebar() {
       href: '/invoices',
       matchPaths: ['/invoices', '/invoices/new', '/dashboard/invoices', '/dashboard/invoices/new'],
       icon: Receipt,
+    },
+    {
+      name: 'Gastos',
+      href: '/expenses',
+      matchPaths: ['/expenses', '/dashboard/expenses'],
+      icon: Wallet,
     },
     {
       name: 'Clientes',

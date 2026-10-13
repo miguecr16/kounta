@@ -10,6 +10,7 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith('/dashboard') ||
     pathname.startsWith('/customers') ||
     pathname.startsWith('/invoices') ||
+    pathname.startsWith('/expenses') ||
     pathname.startsWith('/reports') ||
     pathname.startsWith('/settings') ||
     pathname.startsWith('/onboarding');

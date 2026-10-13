@@ -6,8 +6,13 @@ import { useAuth } from '@/context/auth-context';
 import { usePermissions } from '@/hooks/use-permissions';
 import { createClient } from '@/lib/supabase/client';
 import { Header } from '@/components/layout/header';
-import { Invoice, Customer, TaxBreakdown } from '@/types/database';
-import { formatCurrency, formatDate } from '@/lib/utils';
+import { Invoice, Customer, TaxBreakdown, Expense, ExpenseCategory } from '@/types/database';
+import {
+  EXPENSE_CATEGORY_OPTIONS,
+  formatCurrency,
+  formatDate,
+  getExpenseCategoryBadge,
+} from '@/lib/utils';
 import { Toast, ToastMessage } from '@/components/ui/toast';
 import {
   Calendar,
@@ -18,6 +23,7 @@ import {
   Shield,
   Lock,
   TrendingUp,
+  TrendingDown,
   CheckCircle2,
   Clock,
   Receipt,
@@ -25,6 +31,7 @@ import {
   Building2,
   AlertCircle,
   SlidersHorizontal,
+  Wallet,
 } from 'lucide-react';
 import Link from 'next/link';
 
@@ -88,6 +95,7 @@ export function ReportsView() {
   const { isAdmin, isWorker, isLoading: permLoading } = usePermissions();
 
   const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [expenses, setExpenses] = useState<Expense[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<ToastMessage | null>(null);
@@ -105,8 +113,8 @@ export function ReportsView() {
   // Search filter for customer revenue table
   const [customerSearch, setCustomerSearch] = useState('');
 
-  // Active section tab in reports ('all' | 'customers' | 'taxes')
-  const [reportSection, setReportSection] = useState<'all' | 'customers' | 'taxes'>('all');
+  // Active section tab in reports ('all' | 'pnl' | 'customers' | 'taxes')
+  const [reportSection, setReportSection] = useState<'all' | 'pnl' | 'customers' | 'taxes'>('all');
 
   // Configurable RBAC policy for WORKER access to /reports
   const [workerAccessPolicy, setWorkerAccessPolicy] =
@@ -178,7 +186,7 @@ export function ReportsView() {
     };
   }, [preset, customFrom, customTo]);
 
-  // Load invoices and customers efficiently from Supabase
+  // Load invoices, expenses, and customers efficiently from Supabase
   const loadReportsData = useCallback(async () => {
     if (!activeCompany) return;
 
@@ -213,6 +221,12 @@ export function ReportsView() {
 
       if (invError) throw invError;
 
+      const { data: expData } = await supabase
+        .from('expenses')
+        .select('*')
+        .eq('company_id', activeCompany.id)
+        .order('expense_date', { ascending: false });
+
       const { data: custData, error: custError } = await supabase
         .from('customers')
         .select('id, company_id, name, tax_id, email, billing_address')
@@ -222,6 +236,7 @@ export function ReportsView() {
       if (custError) throw custError;
 
       setInvoices((invData as unknown as Invoice[]) || []);
+      setExpenses((expData as Expense[]) || []);
       setCustomers((custData as Customer[]) || []);
     } catch (err) {
       console.error('Error loading financial reports:', err);
@@ -252,6 +267,70 @@ export function ReportsView() {
       return issueDate >= dateRange.from && issueDate <= dateRange.to;
     });
   }, [invoices, dateRange]);
+
+  // Filter expenses within selected date range
+  const periodExpenses = useMemo(() => {
+    return expenses.filter((exp) => {
+      const expDate = (exp.expense_date || exp.created_at || '').slice(0, 10);
+      if (!expDate) return true;
+      return expDate >= dateRange.from && expDate <= dateRange.to;
+    });
+  }, [expenses, dateRange]);
+
+  // P&L (Profit & Loss / Estado de Resultados) Aggregation
+  const pnlSummary = useMemo(() => {
+    const totalRevenueBilled = periodInvoices.reduce(
+      (acc, inv) => acc + (Number(inv.total) || 0),
+      0
+    );
+    const totalRevenuePaid = periodInvoices
+      .filter((inv) => inv.status === 'PAID')
+      .reduce((acc, inv) => acc + (Number(inv.total) || 0), 0);
+
+    const totalExpenses = periodExpenses.reduce(
+      (acc, exp) => acc + (Number(exp.amount) || 0),
+      0
+    );
+    const totalDeductibleTax = periodExpenses.reduce(
+      (acc, exp) => acc + (Number(exp.tax_deductible) || 0),
+      0
+    );
+
+    const netProfitPaid = totalRevenuePaid - totalExpenses;
+    const netProfitAccrued = totalRevenueBilled - totalExpenses;
+    const netMarginPct =
+      totalRevenuePaid > 0
+        ? (netProfitPaid / totalRevenuePaid) * 100
+        : totalRevenueBilled > 0
+        ? (netProfitAccrued / totalRevenueBilled) * 100
+        : 0;
+
+    // Breakdown by ExpenseCategory
+    const byCategory = EXPENSE_CATEGORY_OPTIONS.map((opt) => {
+      const matching = periodExpenses.filter((e) => e.category === opt.value);
+      const amount = matching.reduce((acc, e) => acc + (Number(e.amount) || 0), 0);
+      const share = totalExpenses > 0 ? (amount / totalExpenses) * 100 : 0;
+      return {
+        category: opt.value,
+        label: opt.label,
+        badgeClass: opt.badgeClass,
+        count: matching.length,
+        amount,
+        share,
+      };
+    }).sort((a, b) => b.amount - a.amount);
+
+    return {
+      totalRevenueBilled,
+      totalRevenuePaid,
+      totalExpenses,
+      totalDeductibleTax,
+      netProfitPaid,
+      netProfitAccrued,
+      netMarginPct,
+      byCategory,
+    };
+  }, [periodInvoices, periodExpenses]);
 
   // 1. Aggregated Customer Revenue Report
   const customerRevenueRows: CustomerRevenueRow[] = useMemo(() => {
@@ -649,6 +728,89 @@ export function ReportsView() {
     });
   };
 
+  // CSV Export 3: Estado de Resultados / Profit & Loss (P&L)
+  const handleExportPnlCSV = () => {
+    const escapeCsv = (val: string | number) => {
+      const s = String(val ?? '');
+      if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+        return `"${s.replace(/"/g, '""')}"`;
+      }
+      return s;
+    };
+
+    const lines: string[] = [
+      ['Concepto Estado de Resultados (P&L)', 'Cantidad Registros', `Monto (${currency})`, 'Participacion (%)']
+        .map(escapeCsv)
+        .join(','),
+      [
+        '(+) Ingresos Facturados Devengados (ISSUED + PAID)',
+        periodInvoices.length,
+        pnlSummary.totalRevenueBilled.toFixed(2),
+        '100%',
+      ]
+        .map(escapeCsv)
+        .join(','),
+      [
+        '(+) Ingresos Efectivamente Cobrados (PAID)',
+        periodInvoices.filter((i) => i.status === 'PAID').length,
+        pnlSummary.totalRevenuePaid.toFixed(2),
+        '',
+      ]
+        .map(escapeCsv)
+        .join(','),
+      ['(-) GASTOS OPERATIVOS TOTALES', periodExpenses.length, (-pnlSummary.totalExpenses).toFixed(2), '100%']
+        .map(escapeCsv)
+        .join(','),
+      ...pnlSummary.byCategory.map((cat) =>
+        [
+          `   Gasto: ${cat.label}`,
+          cat.count,
+          (-cat.amount).toFixed(2),
+          `${cat.share.toFixed(1)}%`,
+        ]
+          .map(escapeCsv)
+          .join(',')
+      ),
+      [
+        '(=) BENEFICIO NETO EN CAJA (Ingresos Cobrados - Gastos)',
+        '',
+        pnlSummary.netProfitPaid.toFixed(2),
+        `${pnlSummary.netMarginPct.toFixed(1)}%`,
+      ]
+        .map(escapeCsv)
+        .join(','),
+      [
+        '(=) RESULTADO OPERATIVO DEVENGADO (Facturado - Gastos)',
+        '',
+        pnlSummary.netProfitAccrued.toFixed(2),
+        '',
+      ]
+        .map(escapeCsv)
+        .join(','),
+    ];
+
+    const csvContent = '\uFEFF' + lines.join('\r\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute(
+      'download',
+      `Kounta_Estado_Resultados_PnL_${activeCompany?.name?.replace(/\s+/g, '_') || 'Empresa'}_${dateRange.from}_${dateRange.to}.csv`
+    );
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    setToast({
+      id: String(Date.now()),
+      type: 'success',
+      title: 'Estado P&L exportado a CSV',
+      description: 'El Estado de Resultados (Profit & Loss) se ha descargado.',
+    });
+  };
+
   if (!permLoading && isWorker && workerAccessPolicy === 'BLOCKED') {
     return null;
   }
@@ -657,9 +819,9 @@ export function ReportsView() {
     <>
       <Header
         title="Reportes Financieros y Fiscales"
-        subtitle={`Liquidación tributaria (${
+        subtitle={`Estado de Resultados (P&L), liquidación tributaria (${
           isColombia ? '🇨🇴 DIAN Colombia' : '🇺🇸 IRS / State Tax USA'
-        }) y estado de cartera por cliente · ${activeCompany?.legal_name || ''}`}
+        }) e ingresos por cliente · ${activeCompany?.legal_name || ''}`}
       />
 
       <main className="p-6 max-w-7xl w-full mx-auto space-y-6">
@@ -759,7 +921,7 @@ export function ReportsView() {
             </div>
 
             {/* Section View Switcher */}
-            <div className="inline-flex items-center p-1 rounded-xl bg-zinc-100 border border-zinc-200/60 self-start lg:self-auto">
+            <div className="inline-flex flex-wrap items-center p-1 rounded-xl bg-zinc-100 border border-zinc-200/60 self-start lg:self-auto">
               <button
                 type="button"
                 onClick={() => setReportSection('all')}
@@ -770,6 +932,17 @@ export function ReportsView() {
                 }`}
               >
                 Vista Completa
+              </button>
+              <button
+                type="button"
+                onClick={() => setReportSection('pnl')}
+                className={`px-3 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+                  reportSection === 'pnl'
+                    ? 'bg-white text-zinc-900 shadow-2xs'
+                    : 'text-zinc-500 hover:text-zinc-800'
+                }`}
+              >
+                Estado P&L (Resultados)
               </button>
               <button
                 type="button"
@@ -818,7 +991,7 @@ export function ReportsView() {
                 />
               </div>
               <span className="text-[11px] text-zinc-400 font-mono-numbers ml-auto">
-                {periodInvoices.length} facturas emitidas en el intervalo
+                {periodInvoices.length} facturas · {periodExpenses.length} gastos en el intervalo
               </span>
             </div>
           ) : (
@@ -830,11 +1003,208 @@ export function ReportsView() {
                 {dateRange.label})
               </span>
               <span className="font-mono-numbers text-zinc-600 font-medium">
-                {periodInvoices.length} comprobantes contabilizados
+                {periodInvoices.length} facturas · {periodExpenses.length} gastos contabilizados
               </span>
             </div>
           )}
         </div>
+
+        {/* =====================================================================
+            SECTION 0: P&L (ESTADO DE RESULTADOS / PROFIT & LOSS)
+        ===================================================================== */}
+        {(reportSection === 'all' || reportSection === 'pnl') && (
+          <section className="bg-white rounded-2xl border border-zinc-200/80 shadow-xs overflow-hidden">
+            <div className="p-5 border-b border-zinc-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex items-start gap-3">
+                <div className="p-2 rounded-xl bg-zinc-900 text-white mt-0.5">
+                  <TrendingUp className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-sm font-semibold text-zinc-900">
+                      Estado de Resultados / Profit &amp; Loss (P&amp;L)
+                    </h2>
+                    <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-zinc-100 text-zinc-700 border border-zinc-200">
+                      Ingresos vs. Gastos
+                    </span>
+                  </div>
+                  <p className="text-xs text-zinc-500 mt-0.5">
+                    Comparativa ejecutiva entre Ingresos Totales recaudados, Gastos Operativos por categoría y Beneficio Neto del periodo.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 self-start sm:self-auto">
+                <Link
+                  href="/expenses"
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-700 bg-zinc-100 hover:bg-zinc-200/80 transition-colors"
+                >
+                  Gestionar Gastos →
+                </Link>
+                <button
+                  type="button"
+                  onClick={handleExportPnlCSV}
+                  disabled={loading}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium bg-zinc-900 hover:bg-zinc-800 disabled:opacity-50 text-white flex items-center gap-1.5 transition-all cursor-pointer shadow-2xs"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Exportar P&amp;L (CSV)</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="p-5 space-y-6">
+              {/* Top 3 P&L Equation Cards: Ingresos Cobrados - Gastos Totales = Beneficio Neto */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {/* 1. Ingresos Totales (Cobrados PAID + Devengados) */}
+                <div className="p-4 rounded-xl bg-zinc-50/70 border border-zinc-200/80 flex flex-col justify-between">
+                  <div>
+                    <div className="flex items-center justify-between text-[11px] font-medium text-zinc-500 uppercase tracking-wider">
+                      <span>(+) Ingresos Cobrados (PAID)</span>
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                    </div>
+                    <div className="mt-2 text-2xl font-bold font-mono-numbers text-zinc-900">
+                      {formatCurrency(pnlSummary.totalRevenuePaid, currency)}
+                    </div>
+                  </div>
+                  <div className="mt-3 pt-2 border-t border-zinc-200/60 flex items-center justify-between text-[11px] font-mono-numbers text-zinc-500">
+                    <span>Facturación emitida total:</span>
+                    <strong className="text-zinc-800">
+                      {formatCurrency(pnlSummary.totalRevenueBilled, currency)}
+                    </strong>
+                  </div>
+                </div>
+
+                {/* 2. Gastos Totales Operativos */}
+                <div className="p-4 rounded-xl bg-zinc-50/70 border border-zinc-200/80 flex flex-col justify-between">
+                  <div>
+                    <div className="flex items-center justify-between text-[11px] font-medium text-zinc-500 uppercase tracking-wider">
+                      <span>(−) Gastos Operativos Totales</span>
+                      <Wallet className="w-3.5 h-3.5 text-zinc-600" />
+                    </div>
+                    <div className="mt-2 text-2xl font-bold font-mono-numbers text-zinc-900">
+                      {formatCurrency(pnlSummary.totalExpenses, currency)}
+                    </div>
+                  </div>
+                  <div className="mt-3 pt-2 border-t border-zinc-200/60 flex items-center justify-between text-[11px] font-mono-numbers text-zinc-500">
+                    <span>Impuestos deducibles:</span>
+                    <strong className="text-emerald-700">
+                      {formatCurrency(pnlSummary.totalDeductibleTax, currency)}
+                    </strong>
+                  </div>
+                </div>
+
+                {/* 3. Beneficio Neto / Utilidad Neta */}
+                <div
+                  className={`p-4 rounded-xl border flex flex-col justify-between ${
+                    pnlSummary.netProfitPaid >= 0
+                      ? 'bg-emerald-50/50 border-emerald-200/90'
+                      : 'bg-rose-50/50 border-rose-200/90'
+                  }`}
+                >
+                  <div>
+                    <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-zinc-700">
+                      <span>(=) Beneficio Neto (Utilidad Neta)</span>
+                      {pnlSummary.netProfitPaid >= 0 ? (
+                        <TrendingUp className="w-4 h-4 text-emerald-600" />
+                      ) : (
+                        <TrendingDown className="w-4 h-4 text-rose-600" />
+                      )}
+                    </div>
+                    <div
+                      className={`mt-2 text-2xl font-bold font-mono-numbers ${
+                        pnlSummary.netProfitPaid >= 0 ? 'text-emerald-700' : 'text-rose-600'
+                      }`}
+                    >
+                      {formatCurrency(pnlSummary.netProfitPaid, currency)}
+                    </div>
+                  </div>
+                  <div className="mt-3 pt-2 border-t border-zinc-200/60 flex items-center justify-between text-[11px] font-mono-numbers text-zinc-600">
+                    <span>Resultado devengado (Facturado − Gastos):</span>
+                    <strong className="text-zinc-900">
+                      {formatCurrency(pnlSummary.netProfitAccrued, currency)}
+                    </strong>
+                  </div>
+                </div>
+              </div>
+
+              {/* Tabla Contable P&L y Desglose por Categoría de Gasto */}
+              <div className="border border-zinc-200/80 rounded-xl overflow-hidden">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-zinc-50/80 border-b border-zinc-200/70 text-zinc-500 text-[11px] font-medium uppercase tracking-wider">
+                      <th className="py-2.5 px-4">Rubro / Categoría P&amp;L</th>
+                      <th className="py-2.5 px-3 text-center">Comprobantes</th>
+                      <th className="py-2.5 px-4">Distribución</th>
+                      <th className="py-2.5 px-4 text-right">Importe ({currency})</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-zinc-100">
+                    {/* Ingresos Cobrados Row */}
+                    <tr className="bg-emerald-50/20 font-semibold text-zinc-900">
+                      <td className="py-3 px-4">
+                        (+) Ingresos Operativos Cobrados (Facturas PAID)
+                      </td>
+                      <td className="py-3 px-3 text-center font-mono-numbers">
+                        {periodInvoices.filter((i) => i.status === 'PAID').length}
+                      </td>
+                      <td className="py-3 px-4 text-[11px] text-emerald-700">
+                        Flujo efectivo de entrada
+                      </td>
+                      <td className="py-3 px-4 text-right font-mono-numbers text-emerald-700">
+                        +{formatCurrency(pnlSummary.totalRevenuePaid, currency)}
+                      </td>
+                    </tr>
+
+                    {/* Expense Categories Breakdown */}
+                    {pnlSummary.byCategory.map((cat) => (
+                      <tr key={cat.category} className="hover:bg-zinc-50/60">
+                        <td className="py-2.5 px-4 pl-7">
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium border ${cat.badgeClass}`}
+                          >
+                            {cat.label}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-center font-mono-numbers text-zinc-500">
+                          {cat.count}
+                        </td>
+                        <td className="py-2.5 px-4">
+                          <div className="flex items-center gap-2 max-w-[180px]">
+                            <div className="flex-1 h-1.5 rounded-full bg-zinc-100 overflow-hidden">
+                              <div
+                                className="h-full bg-zinc-800 rounded-full"
+                                style={{ width: `${Math.min(100, cat.share)}%` }}
+                              />
+                            </div>
+                            <span className="text-[10px] font-mono-numbers text-zinc-500 w-10 text-right">
+                              {cat.share.toFixed(0)}%
+                            </span>
+                          </div>
+                        </td>
+                        <td className="py-2.5 px-4 text-right font-mono-numbers text-zinc-800">
+                          {cat.amount > 0
+                            ? `-${formatCurrency(cat.amount, currency)}`
+                            : formatCurrency(0, currency)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="bg-zinc-900 text-white font-semibold">
+                      <td className="py-3.5 px-4" colSpan={3}>
+                        (=) BENEFICIO NETO DEL PERIODO (Ingresos Cobrados − Gastos Totales)
+                      </td>
+                      <td className="py-3.5 px-4 text-right font-mono-numbers text-sm">
+                        {formatCurrency(pnlSummary.netProfitPaid, currency)}
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          </section>
+        )}
 
         {/* =====================================================================
             SECTION 1: REPORTE DE INGRESOS POR CLIENTE

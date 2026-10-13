@@ -4,7 +4,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAuth } from '@/context/auth-context';
 import { createClient } from '@/lib/supabase/client';
 import { Header } from '@/components/layout/header';
-import { Invoice, Customer } from '@/types/database';
+import { Invoice, Customer, Expense } from '@/types/database';
 import { formatCurrency, formatDate, getStatusBadge } from '@/lib/utils';
 import {
   Clock,
@@ -17,9 +17,13 @@ import {
   Percent,
   BarChart3,
   Eye,
+  Wallet,
+  TrendingUp,
+  TrendingDown,
 } from 'lucide-react';
 import { CreateInvoiceModal } from '@/components/modals/create-invoice-modal';
 import { CreateCustomerModal } from '@/components/modals/create-customer-modal';
+import { CreateExpenseModal } from '@/components/modals/create-expense-modal';
 import { RevenueEvolutionChart } from '@/components/dashboard/revenue-evolution-chart';
 import { Toast, ToastMessage } from '@/components/ui/toast';
 import Link from 'next/link';
@@ -31,10 +35,12 @@ export default function DashboardPage() {
   const supabase = createClient();
 
   const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [expenses, setExpenses] = useState<Expense[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
   const [isInvoiceModalOpen, setIsInvoiceModalOpen] = useState(false);
   const [isCustomerModalOpen, setIsCustomerModalOpen] = useState(false);
+  const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
   const [toast, setToast] = useState<ToastMessage | null>(null);
 
   useEffect(() => {
@@ -57,7 +63,7 @@ export default function DashboardPage() {
 
     setLoading(true);
     try {
-      // Optimized query selecting only required columns for KPIs, chart & recent transactions
+      // 1. Fetch invoices
       const { data: invData, error: invError } = await supabase
         .from('invoices')
         .select(`
@@ -86,6 +92,14 @@ export default function DashboardPage() {
 
       if (invError) throw invError;
 
+      // 2. Fetch expenses for active company
+      const { data: expData } = await supabase
+        .from('expenses')
+        .select('id, company_id, vendor_name, category, expense_date, amount, currency, tax_deductible, created_at')
+        .eq('company_id', activeCompany.id)
+        .order('expense_date', { ascending: false });
+
+      // 3. Fetch customers
       const { data: custList, error: custError } = await supabase
         .from('customers')
         .select('id, company_id, name, tax_id, email, billing_address, created_at')
@@ -95,6 +109,7 @@ export default function DashboardPage() {
       if (custError) throw custError;
 
       setInvoices((invData as unknown as Invoice[]) || []);
+      setExpenses((expData as Expense[]) || []);
       setCustomers((custList as Customer[]) || []);
     } catch (err) {
       console.error('Error fetching dashboard data:', err);
@@ -107,7 +122,6 @@ export default function DashboardPage() {
     loadDashboardData();
   }, [loadDashboardData]);
 
-  // Executive KPIs calculation
   const currency = activeCompany?.base_currency || 'COP';
 
   const kpis = useMemo(() => {
@@ -115,7 +129,6 @@ export default function DashboardPage() {
     const currentYearMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
     const todayStr = now.toISOString().split('T')[0];
 
-    // Valid emitted invoices (exclude VOID and DRAFT for collection rate & billed totals)
     const activeEmittedInvoices = invoices.filter(
       (inv) => inv.status === 'ISSUED' || inv.status === 'PARTIAL_PAID' || inv.status === 'PAID'
     );
@@ -150,7 +163,7 @@ export default function DashboardPage() {
       0
     );
 
-    // 3. Facturas Vencidas (Overdue: status === 'ISSUED' and due_date < today)
+    // 3. Facturas Vencidas (Overdue)
     const overdueInvoices = invoices.filter(
       (inv) =>
         (inv.status === 'ISSUED' || inv.status === 'PARTIAL_PAID') &&
@@ -162,9 +175,27 @@ export default function DashboardPage() {
       0
     );
 
-    // 4. Tasa de Cobro (%): Paid / Total Emitted
+    // 4. Tasa de Cobro (%)
     const collectionRate =
       totalEmittedAmount > 0 ? (totalPaidAllTime / totalEmittedAmount) * 100 : 0;
+
+    // 5. Gastos del Mes & Gastos Totales
+    const totalExpensesAllTime = expenses.reduce(
+      (acc, exp) => acc + (Number(exp.amount) || 0),
+      0
+    );
+    const expensesThisMonthList = expenses.filter((exp) => {
+      const d = exp.expense_date || exp.created_at || '';
+      return d.startsWith(currentYearMonth);
+    });
+    const expensesThisMonth = expensesThisMonthList.reduce(
+      (acc, exp) => acc + (Number(exp.amount) || 0),
+      0
+    );
+
+    // 6. Utilidad Neta (Net Profit): Facturas cobradas (PAID) menos Gastos
+    const netProfitThisMonth = revenuePaidThisMonth - expensesThisMonth;
+    const netProfitAllTime = totalPaidAllTime - totalExpensesAllTime;
 
     return {
       revenuePaidThisMonth,
@@ -177,8 +208,13 @@ export default function DashboardPage() {
       overdueCount: overdueInvoices.length,
       collectionRate,
       totalEmittedAmount,
+      expensesThisMonth,
+      expensesThisMonthCount: expensesThisMonthList.length,
+      totalExpensesAllTime,
+      netProfitThisMonth,
+      netProfitAllTime,
     };
-  }, [invoices]);
+  }, [invoices, expenses]);
 
   // Last 5 emitted transactions
   const recentTransactions = useMemo(() => {
@@ -198,20 +234,28 @@ export default function DashboardPage() {
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <h2 className="text-base font-semibold text-zinc-900 tracking-tight">
-              Resumen Financiero y Operativo
+              Resumen Financiero y Estado de Resultados
             </h2>
             <p className="text-xs text-zinc-500">
-              Indicadores clave de recaudación, cartera activa y cumplimiento fiscal en tiempo real.
+              Indicadores clave de recaudación, gastos operativos, utilidad neta y cartera activa.
             </p>
           </div>
-          <div className="flex items-center gap-2.5 self-start sm:self-auto">
+          <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
             <Link
               href="/reports"
               className="px-3 py-1.5 text-xs font-medium text-zinc-700 bg-white hover:bg-zinc-50 border border-zinc-200/90 rounded-lg flex items-center gap-1.5 transition-all shadow-2xs"
             >
               <BarChart3 className="w-3.5 h-3.5 text-zinc-500" />
-              <span>Reportes Fiscales</span>
+              <span>Reportes P&L</span>
             </Link>
+            <button
+              type="button"
+              onClick={() => setIsExpenseModalOpen(true)}
+              className="px-3 py-1.5 text-xs font-medium text-zinc-800 bg-white hover:bg-zinc-50 border border-zinc-200/90 rounded-lg flex items-center gap-1.5 transition-all shadow-2xs cursor-pointer"
+            >
+              <Wallet className="w-3.5 h-3.5 text-zinc-600" />
+              <span>+ Registrar Gasto</span>
+            </button>
             <Link
               href="/invoices/new"
               className="px-3 py-1.5 text-xs font-medium bg-zinc-900 hover:bg-zinc-800 text-white rounded-lg flex items-center gap-1.5 transition-all shadow-xs"
@@ -222,9 +266,9 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* 1. Executive KPI Cards Grid (Stripe / Mercury Style) */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {/* KPI 1: Ingresos Cobrados (Revenue Paid - Mes en Curso) */}
+        {/* 1. Executive KPI Cards Grid (6 Cards: 3x2 on large screens) */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {/* KPI 1: Ingresos Cobrados (Revenue Paid - Mes) */}
           <div className="bg-white p-5 rounded-2xl border border-zinc-200/80 shadow-xs flex flex-col justify-between">
             <div>
               <div className="flex items-center justify-between text-zinc-500 mb-2">
@@ -251,7 +295,82 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* KPI 2: Cuentas por Cobrar (Outstanding / Receivables) */}
+          {/* KPI 2: Gastos del Mes (NUEVO FASE 8) */}
+          <div className="bg-white p-5 rounded-2xl border border-zinc-200/80 shadow-xs flex flex-col justify-between">
+            <div>
+              <div className="flex items-center justify-between text-zinc-500 mb-2">
+                <span className="text-xs font-medium text-zinc-600">
+                  Gastos del Mes
+                </span>
+                <div className="p-1.5 rounded-lg bg-zinc-100 text-zinc-700 border border-zinc-200/60">
+                  <Wallet className="w-4 h-4" />
+                </div>
+              </div>
+              {loading ? (
+                <div className="h-8 w-36 bg-zinc-100 animate-pulse rounded my-1" />
+              ) : (
+                <div className="text-2xl font-bold font-mono-numbers text-zinc-900 tracking-tight">
+                  {formatCurrency(kpis.expensesThisMonth, currency)}
+                </div>
+              )}
+            </div>
+            <div className="mt-3 pt-2.5 border-t border-zinc-100 flex items-center justify-between text-[11px] font-mono-numbers">
+              <span className="text-zinc-500">Egresos acumulados:</span>
+              <Link
+                href="/expenses"
+                className="font-semibold text-zinc-800 hover:text-indigo-600 transition-colors"
+              >
+                {formatCurrency(kpis.totalExpensesAllTime, currency)} →
+              </Link>
+            </div>
+          </div>
+
+          {/* KPI 3: Utilidad Neta / Net Profit (NUEVO FASE 8) */}
+          <div className="bg-white p-5 rounded-2xl border border-zinc-200/80 shadow-xs flex flex-col justify-between">
+            <div>
+              <div className="flex items-center justify-between text-zinc-500 mb-2">
+                <span className="text-xs font-medium text-zinc-600">
+                  Utilidad Neta (Net Profit Mes)
+                </span>
+                <div
+                  className={`p-1.5 rounded-lg border ${
+                    kpis.netProfitThisMonth >= 0
+                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200/60'
+                      : 'bg-rose-50 text-rose-700 border-rose-200/60'
+                  }`}
+                >
+                  {kpis.netProfitThisMonth >= 0 ? (
+                    <TrendingUp className="w-4 h-4" />
+                  ) : (
+                    <TrendingDown className="w-4 h-4" />
+                  )}
+                </div>
+              </div>
+              {loading ? (
+                <div className="h-8 w-36 bg-zinc-100 animate-pulse rounded my-1" />
+              ) : (
+                <div
+                  className={`text-2xl font-bold font-mono-numbers tracking-tight ${
+                    kpis.netProfitThisMonth >= 0 ? 'text-emerald-700' : 'text-rose-600'
+                  }`}
+                >
+                  {formatCurrency(kpis.netProfitThisMonth, currency)}
+                </div>
+              )}
+            </div>
+            <div className="mt-3 pt-2.5 border-t border-zinc-100 flex items-center justify-between text-[11px] font-mono-numbers">
+              <span className="text-zinc-500">Beneficio neto histórico:</span>
+              <span
+                className={`font-semibold ${
+                  kpis.netProfitAllTime >= 0 ? 'text-emerald-700' : 'text-rose-600'
+                }`}
+              >
+                {formatCurrency(kpis.netProfitAllTime, currency)}
+              </span>
+            </div>
+          </div>
+
+          {/* KPI 4: Cuentas por Cobrar (Outstanding / Receivables) */}
           <div className="bg-white p-5 rounded-2xl border border-zinc-200/80 shadow-xs flex flex-col justify-between">
             <div>
               <div className="flex items-center justify-between text-zinc-500 mb-2">
@@ -278,7 +397,7 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* KPI 3: Facturas Vencidas (Overdue) */}
+          {/* KPI 5: Facturas Vencidas (Overdue) */}
           <div className="bg-white p-5 rounded-2xl border border-zinc-200/80 shadow-xs flex flex-col justify-between">
             <div>
               <div className="flex items-center justify-between text-zinc-500 mb-2">
@@ -321,7 +440,7 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* KPI 4: Tasa de Cobro (%) */}
+          {/* KPI 6: Tasa de Cobro (%) */}
           <div className="bg-white p-5 rounded-2xl border border-zinc-200/80 shadow-xs flex flex-col justify-between">
             <div>
               <div className="flex items-center justify-between text-zinc-500 mb-2">
@@ -571,10 +690,10 @@ export default function DashboardPage() {
                   <ArrowUpRight className="w-3.5 h-3.5" />
                 </Link>
                 <Link
-                  href="/reports"
+                  href="/expenses"
                   className="text-indigo-600 hover:text-indigo-700 font-medium"
                 >
-                  Ingresos por cliente →
+                  Libro de gastos →
                 </Link>
               </div>
             </div>
@@ -589,7 +708,7 @@ export default function DashboardPage() {
                   href="/reports"
                   className="text-[11px] font-medium text-zinc-600 hover:text-zinc-900 underline underline-offset-2"
                 >
-                  Resumen Tributario
+                  Estado P&L
                 </Link>
               </div>
               <div className="space-y-2.5 text-xs">
@@ -644,6 +763,20 @@ export default function DashboardPage() {
             type: 'success',
             title: 'Cliente guardado exitosamente',
             description: 'El directorio de clientes ha sido actualizado.',
+          });
+        }}
+      />
+
+      <CreateExpenseModal
+        isOpen={isExpenseModalOpen}
+        onClose={() => setIsExpenseModalOpen(false)}
+        onExpenseSaved={(savedExp) => {
+          setExpenses((prev) => [savedExp, ...prev]);
+          setToast({
+            id: String(Date.now()),
+            type: 'success',
+            title: 'Gasto registrado exitosamente',
+            description: `El egreso de ${savedExp.vendor_name} actualizó la Utilidad Neta del Dashboard.`,
           });
         }}
       />
