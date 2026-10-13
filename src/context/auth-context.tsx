@@ -44,7 +44,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const loadTenantData = useCallback(async (currentUser: User) => {
     try {
-      // Query memberships with embedded company data
+      // Query memberships with embedded company data (including subscription columns)
       const { data, error } = await supabase
         .from('company_members')
         .select(`
@@ -53,15 +53,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           company_id,
           role,
           created_at,
-          companies:company_id (
-            id,
-            name,
-            legal_name,
-            country,
-            tax_id,
-            base_currency,
-            created_at
-          )
+          companies:company_id (*)
         `)
         .eq('user_id', currentUser.id);
 

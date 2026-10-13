@@ -1,12 +1,24 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/auth-context';
 import { usePermissions } from '@/hooks/use-permissions';
 import { createClient } from '@/lib/supabase/client';
-import { CompanyRole, CountryCode } from '@/types/database';
-import { formatCurrency, formatDate } from '@/lib/utils';
+import {
+  CompanyRole,
+  CountryCode,
+  SubscriptionStatus,
+  SubscriptionTier,
+} from '@/types/database';
+import { formatDate } from '@/lib/utils';
+import {
+  SUBSCRIPTION_PLANS,
+  getEffectiveSubscription,
+  getSubscriptionStatusBadge,
+  processSubscriptionChange,
+  PlanDefinition,
+} from '@/lib/billing/subscription-service';
 import {
   Building2,
   Users,
@@ -20,13 +32,16 @@ import {
   Copy,
   Mail,
   Lock,
-  CheckCircle2,
   Sparkles,
   Receipt,
   Globe2,
   Coins,
   X,
-  Link2
+  Link2,
+  ArrowUpRight,
+  Calendar,
+  Zap,
+  CheckCircle2,
 } from 'lucide-react';
 import { Toast, ToastMessage } from '@/components/ui/toast';
 
@@ -100,7 +115,28 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
   // ==========================================
   // TAB 3 STATE: SUSCRIPCIÓN Y FACTURACIÓN
   // ==========================================
-  const [selectedPlan, setSelectedPlan] = useState<'STARTER' | 'GROWTH' | 'ENTERPRISE'>('GROWTH');
+  const [checkoutTargetPlan, setCheckoutTargetPlan] = useState<PlanDefinition | null>(null);
+  const [processingCheckout, setProcessingCheckout] = useState(false);
+  const [simulatedStatus, setSimulatedStatus] = useState<SubscriptionStatus>('active');
+
+  // Effective subscription derived from activeCompany
+  const subscription = useMemo(
+    () => getEffectiveSubscription(activeCompany),
+    [activeCompany]
+  );
+
+  useEffect(() => {
+    setSimulatedStatus(subscription.status);
+  }, [subscription.status]);
+
+  // Member limit check
+  const hasReachedMemberLimit =
+    !subscription.isUnlimitedMembers && members.length >= subscription.maxMembers;
+
+  // Invoice monthly limit check
+  const hasReachedInvoiceLimit =
+    !subscription.isUnlimitedInvoices &&
+    monthlyInvoicesCount >= subscription.maxInvoicesPerMonth;
 
   // Populate initial company form values
   useEffect(() => {
@@ -111,7 +147,6 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
       setTaxId(activeCompany.tax_id || '');
       setBaseCurrency(activeCompany.base_currency || 'COP');
 
-      // Load stored pending invitations for this company
       if (typeof window !== 'undefined') {
         const raw = localStorage.getItem(`kounta_invites_${activeCompany.id}`);
         if (raw) {
@@ -136,7 +171,7 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
       // 1. Check total invoices count & current month invoices count
       const { data: invRows } = await supabase
         .from('invoices')
-        .select('id, issue_date, created_at')
+        .select('id, issue_date, created_at, status')
         .eq('company_id', activeCompany.id);
 
       if (invRows) {
@@ -147,8 +182,9 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
         ).padStart(2, '0')}`;
         const monthly = invRows.filter(
           (r) =>
-            (r.issue_date && r.issue_date.startsWith(currentMonthPrefix)) ||
-            (r.created_at && r.created_at.startsWith(currentMonthPrefix))
+            r.status !== 'VOID' &&
+            ((r.issue_date && r.issue_date.startsWith(currentMonthPrefix)) ||
+              (r.created_at && r.created_at.startsWith(currentMonthPrefix)))
         ).length;
         setMonthlyInvoicesCount(monthly);
       }
@@ -216,7 +252,6 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
         tax_id: taxId.trim(),
       };
 
-      // Only allow updating base_currency if no invoices have been issued yet
       if (invoicesCount === 0) {
         updatePayload.base_currency = baseCurrency;
       }
@@ -249,14 +284,13 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
   };
 
   // ==========================================
-  // HANDLERS TAB 2: TEAM & RBAC
+  // HANDLERS TAB 2: TEAM & RBAC + MEMBER LIMIT ENFORCEMENT
   // ==========================================
   const adminCount = members.filter((m) => m.role === 'ADMIN').length;
 
   const handleRoleChange = async (member: any, newRole: CompanyRole) => {
     if (!activeCompany) return;
 
-    // Prevent self-downgrade if sole ADMIN
     const isSelf = member.user_id === user?.id;
     if (isSelf && member.role === 'ADMIN' && newRole !== 'ADMIN' && adminCount <= 1) {
       setToast({
@@ -351,6 +385,17 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
     e.preventDefault();
     if (!activeCompany) return;
 
+    // Enforce max_members limit
+    if (hasReachedMemberLimit) {
+      setToast({
+        id: String(Date.now()),
+        type: 'error',
+        title: 'Límite de miembros alcanzado',
+        description: `Tu plan ${subscription.plan.name} permite hasta ${subscription.maxMembers} miembros. Mejora tu plan para agregar más colaboradores.`,
+      });
+      return;
+    }
+
     const normalizedEmail = inviteEmail.trim().toLowerCase();
     if (!normalizedEmail) return;
 
@@ -358,7 +403,6 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
     setGeneratedInviteLink(null);
 
     try {
-      // 1. Check if user already exists in public.users
       const { data: existingUser } = await supabase
         .from('users')
         .select('id, email, full_name')
@@ -366,7 +410,6 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
         .maybeSingle();
 
       if (existingUser) {
-        // Check if already in company_members
         const alreadyInTeam = members.some((m) => m.user_id === existingUser.id);
         if (alreadyInTeam) {
           setToast({
@@ -379,7 +422,6 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
           return;
         }
 
-        // Direct insert into company_members
         const { data: newMember, error: insertError } = await supabase
           .from('company_members')
           .insert({
@@ -418,7 +460,6 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
         setInviteEmail('');
         setIsInviteModalOpen(false);
       } else {
-        // User does not exist yet in Supabase Users: register pending invitation & generate onboarding link
         const origin =
           typeof window !== 'undefined' ? window.location.origin : 'https://kounta.app';
         const inviteUrl = `${origin}/auth?invite_company=${
@@ -475,6 +516,77 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
     }
   };
 
+  // ==========================================
+  // HANDLER TAB 3: STRIPE CHECKOUT / PLAN UPGRADE
+  // ==========================================
+  const handleConfirmPlanChange = async () => {
+    if (!activeCompany || !checkoutTargetPlan) return;
+
+    setProcessingCheckout(true);
+    try {
+      const result = await processSubscriptionChange({
+        companyId: activeCompany.id,
+        targetTier: checkoutTargetPlan.id,
+        targetStatus: simulatedStatus,
+      });
+
+      if (!result.success) {
+        throw new Error(result.error || 'No se pudo actualizar la suscripción en Supabase.');
+      }
+
+      await refreshTenantData();
+      setToast({
+        id: String(Date.now()),
+        type: 'success',
+        title: `Plan actualizado a Kounta ${checkoutTargetPlan.name}`,
+        description: `Nuevos límites activos: ${
+          checkoutTargetPlan.isUnlimitedInvoices
+            ? 'Facturas ilimitadas'
+            : `${checkoutTargetPlan.maxInvoicesPerMonth} facturas/mes`
+        } y ${
+          checkoutTargetPlan.isUnlimitedMembers
+            ? 'miembros ilimitados'
+            : `${checkoutTargetPlan.maxMembers} miembros`
+        }.`,
+      });
+      setCheckoutTargetPlan(null);
+    } catch (err: any) {
+      console.error('Error changing subscription plan:', err);
+      setToast({
+        id: String(Date.now()),
+        type: 'error',
+        title: 'Error al cambiar de plan',
+        description: err.message || 'Ocurrió un error al actualizar la suscripción.',
+      });
+    } finally {
+      setProcessingCheckout(false);
+    }
+  };
+
+  const handleQuickStatusUpdate = async (newStatus: SubscriptionStatus) => {
+    if (!activeCompany) return;
+    setSimulatedStatus(newStatus);
+    try {
+      const result = await processSubscriptionChange({
+        companyId: activeCompany.id,
+        targetTier: subscription.tier,
+        targetStatus: newStatus,
+      });
+      if (result.success) {
+        await refreshTenantData();
+        const badge = getSubscriptionStatusBadge(newStatus);
+        setToast({
+          id: String(Date.now()),
+          type: 'info',
+          title: `Estado de suscripción: ${badge.label}`,
+          description: 'El estado del ciclo de facturación fue actualizado en Supabase.',
+        });
+      }
+    } catch (e) {
+      console.error('Status update error:', e);
+    }
+  };
+
   if (permissionsLoading || !isAdmin) {
     return (
       <div className="p-10 flex items-center justify-center text-xs text-zinc-400 gap-2">
@@ -485,6 +597,16 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
   }
 
   const isColombia = country === 'CO';
+  const statusBadge = getSubscriptionStatusBadge(subscription.status);
+
+  // Compute usage percentages for progress bars
+  const invoiceUsagePct = subscription.isUnlimitedInvoices
+    ? Math.min(100, Math.max(6, (monthlyInvoicesCount / 200) * 100))
+    : Math.min(100, (monthlyInvoicesCount / subscription.maxInvoicesPerMonth) * 100);
+
+  const memberUsagePct = subscription.isUnlimitedMembers
+    ? Math.min(100, Math.max(8, (members.length / 25) * 100))
+    : Math.min(100, (members.length / subscription.maxMembers) * 100);
 
   return (
     <>
@@ -503,7 +625,7 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
                 </span>
               </div>
               <p className="text-[11px] text-zinc-500">
-                Administra los datos fiscales, miembros del equipo y suscripción de{' '}
+                Administra los datos fiscales, miembros del equipo y suscripción SaaS de{' '}
                 <strong className="text-zinc-700">{activeCompany?.name}</strong>
               </p>
             </div>
@@ -537,6 +659,7 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
               <span>Equipo y Permisos</span>
               <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono-numbers bg-zinc-100 text-zinc-700">
                 {members.length}
+                {!subscription.isUnlimitedMembers ? `/${subscription.maxMembers}` : ''}
               </span>
             </button>
 
@@ -551,6 +674,9 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
             >
               <CreditCard className="w-3.5 h-3.5" />
               <span>Suscripción y Facturación</span>
+              <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold uppercase bg-zinc-900 text-white">
+                {subscription.plan.name}
+              </span>
             </button>
           </div>
         </div>
@@ -646,7 +772,7 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
                   />
                 </div>
 
-                {/* Moneda Base (Bloqueada si ya existen facturas emitidas) */}
+                {/* Moneda Base */}
                 <div className="sm:col-span-2">
                   <label className="block text-xs font-medium text-zinc-700 mb-1.5 flex items-center gap-1.5">
                     <Coins className="w-3.5 h-3.5 text-zinc-400" />
@@ -703,13 +829,51 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
         {/* ============================================================ */}
         {activeTab === 'team' && (
           <div className="space-y-6">
+            {/* Banner de Límite de Miembros Alcanzado */}
+            {hasReachedMemberLimit && (
+              <div className="p-4 rounded-2xl bg-amber-50/90 border border-amber-200/90 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-2xs">
+                <div className="flex items-start gap-3">
+                  <div className="p-2 rounded-xl bg-amber-100 text-amber-800 shrink-0 mt-0.5">
+                    <AlertTriangle className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-semibold text-amber-950">
+                      Has alcanzado el límite de miembros de tu plan {subscription.plan.name} (
+                      <span className="font-mono-numbers">
+                        {members.length} / {subscription.maxMembers}
+                      </span>{' '}
+                      miembros)
+                    </h3>
+                    <p className="text-[11px] text-amber-800 mt-0.5 leading-relaxed">
+                      Para invitar más colaboradores a <strong>{activeCompany?.name}</strong>, actualiza tu suscripción a{' '}
+                      <strong>{subscription.tier === 'starter' ? 'Growth (hasta 10 miembros)' : 'Enterprise (miembros ilimitados)'}</strong>.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleTabSwitch('billing')}
+                  className="px-3.5 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-white text-xs font-medium flex items-center gap-1.5 shrink-0 cursor-pointer shadow-2xs"
+                >
+                  <Zap className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Mejorar Plan</span>
+                </button>
+              </div>
+            )}
+
             <div className="bg-white rounded-2xl border border-zinc-200/80 shadow-xs overflow-hidden">
               {/* Cabecera */}
               <div className="px-6 py-5 border-b border-zinc-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
-                  <h2 className="text-sm font-semibold text-zinc-900">
-                    Miembros del Equipo
-                  </h2>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-sm font-semibold text-zinc-900">
+                      Miembros del Equipo
+                    </h2>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono-numbers font-medium bg-zinc-100 text-zinc-700 border border-zinc-200">
+                      {members.length} /{' '}
+                      {subscription.isUnlimitedMembers ? '∞' : subscription.maxMembers} asientos
+                    </span>
+                  </div>
                   <p className="text-xs text-zinc-500 mt-0.5">
                     Gestiona quién tiene acceso a <strong>{activeCompany?.name}</strong> y sus niveles de permiso (RBAC).
                   </p>
@@ -723,9 +887,17 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
                     setGeneratedInviteLink(null);
                     setIsInviteModalOpen(true);
                   }}
-                  className="flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-white text-xs font-medium shadow-xs transition-all cursor-pointer shrink-0"
+                  className={`flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-medium shadow-xs transition-all cursor-pointer shrink-0 ${
+                    hasReachedMemberLimit
+                      ? 'bg-zinc-100 text-zinc-500 border border-zinc-200 hover:bg-zinc-200/70'
+                      : 'bg-zinc-900 hover:bg-zinc-800 text-white'
+                  }`}
                 >
-                  <UserPlus className="w-3.5 h-3.5" />
+                  {hasReachedMemberLimit ? (
+                    <Lock className="w-3.5 h-3.5" />
+                  ) : (
+                    <UserPlus className="w-3.5 h-3.5" />
+                  )}
                   <span>+ Invitar Miembro</span>
                 </button>
               </div>
@@ -762,7 +934,6 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
 
                         return (
                           <tr key={mem.id} className="hover:bg-zinc-50/60 transition-colors">
-                            {/* Col 1: Usuario (Nombre y Email) */}
                             <td className="py-3.5 px-5">
                               <div className="flex items-center gap-3">
                                 <div className="h-8 w-8 rounded-lg bg-zinc-900 text-white flex items-center justify-center font-semibold text-xs shrink-0">
@@ -784,7 +955,6 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
                               </div>
                             </td>
 
-                            {/* Col 2: Rol Badge (ADMIN en gris/azul neutro, WORKER en gris claro) */}
                             <td className="py-3.5 px-4">
                               {mem.role === 'ADMIN' ? (
                                 <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-[11px] font-semibold bg-slate-100 text-slate-800 border border-slate-300/80">
@@ -798,24 +968,17 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
                               )}
                             </td>
 
-                            {/* Col 3: Fecha de ingreso */}
                             <td className="py-3.5 px-4 text-zinc-500 font-mono-numbers">
                               {formatDate(mem.created_at)}
                             </td>
 
-                            {/* Col 4: Acciones (Cambio de rol dinámico + Revocar acceso) */}
                             <td className="py-3.5 px-5 text-right">
                               <div className="inline-flex items-center justify-end gap-2">
                                 <select
                                   value={mem.role}
-                                  disabled={
-                                    updatingMemberId === mem.id || isSoleAdmin
-                                  }
+                                  disabled={updatingMemberId === mem.id || isSoleAdmin}
                                   onChange={(e) =>
-                                    handleRoleChange(
-                                      mem,
-                                      e.target.value as CompanyRole
-                                    )
+                                    handleRoleChange(mem, e.target.value as CompanyRole)
                                   }
                                   title={
                                     isSoleAdmin
@@ -852,7 +1015,7 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
               )}
             </div>
 
-            {/* Invitaciones Pendientes (si se invitó a usuarios aún no registrados) */}
+            {/* Invitaciones Pendientes */}
             {pendingInvitations.length > 0 && (
               <div className="bg-white rounded-2xl border border-zinc-200/80 shadow-xs p-5 space-y-3">
                 <div className="flex items-center justify-between">
@@ -914,266 +1077,307 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
         {/* ============================================================ */}
         {activeTab === 'billing' && (
           <div className="space-y-6">
-            {/* Plan Cards Grid (Starter, Growth, Enterprise) */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {[
-                {
-                  id: 'STARTER' as const,
-                  name: 'Starter',
-                  price: activeCompany?.base_currency === 'COP' ? '$79.000' : '$19',
-                  period: '/ mes',
-                  desc: 'Para emprendedores y pequeñas empresas en etapa inicial.',
-                  maxUsers: 3,
-                  maxInvoices: 50,
-                },
-                {
-                  id: 'GROWTH' as const,
-                  name: 'Growth',
-                  price: activeCompany?.base_currency === 'COP' ? '$199.000' : '$49',
-                  period: '/ mes',
-                  desc: 'Para operaciones comerciales en crecimiento en CO y US.',
-                  maxUsers: 10,
-                  maxInvoices: 500,
-                  popular: true,
-                },
-                {
-                  id: 'ENTERPRISE' as const,
-                  name: 'Enterprise',
-                  price: activeCompany?.base_currency === 'COP' ? '$590.000' : '$149',
-                  period: '/ mes',
-                  desc: 'Multi-entidad sin límites, soporte prioritario y auditoría RLS.',
-                  maxUsers: 999,
-                  maxInvoices: 10000,
-                },
-              ].map((plan) => {
-                const isCurrent = selectedPlan === plan.id;
-                return (
-                  <div
-                    key={plan.id}
-                    className={`rounded-2xl border p-5 flex flex-col justify-between transition-all ${
-                      isCurrent
-                        ? 'bg-white border-zinc-900 ring-1 ring-zinc-900 shadow-xs'
-                        : 'bg-white border-zinc-200/80 hover:border-zinc-300'
-                    }`}
-                  >
-                    <div>
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-sm font-semibold text-zinc-900">
-                          Kounta {plan.name}
-                        </span>
-                        {isCurrent && (
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-zinc-900 text-white">
-                            Plan Actual
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-xs text-zinc-500 leading-relaxed min-h-[34px]">
-                        {plan.desc}
-                      </p>
-                      <div className="mt-4 flex items-baseline gap-1">
-                        <span className="text-2xl font-bold font-mono-numbers text-zinc-900">
-                          {plan.price}
-                        </span>
-                        <span className="text-xs text-zinc-500">
-                          {activeCompany?.base_currency} {plan.period}
-                        </span>
-                      </div>
-                      <ul className="mt-4 pt-4 border-t border-zinc-100 space-y-2 text-xs text-zinc-600">
-                        <li className="flex items-center gap-2">
-                          <Check className="w-3.5 h-3.5 text-zinc-900" />
-                          <span>
-                            Hasta{' '}
-                            <strong className="font-mono-numbers">
-                              {plan.maxUsers === 999 ? 'Ilimitados' : plan.maxUsers}
-                            </strong>{' '}
-                            colaboradores
-                          </span>
-                        </li>
-                        <li className="flex items-center gap-2">
-                          <Check className="w-3.5 h-3.5 text-zinc-900" />
-                          <span>
-                            <strong className="font-mono-numbers">
-                              {plan.maxInvoices.toLocaleString()}
-                            </strong>{' '}
-                            facturas / mes
-                          </span>
-                        </li>
-                        <li className="flex items-center gap-2">
-                          <Check className="w-3.5 h-3.5 text-zinc-900" />
-                          <span>Exportación PDF Corporativo</span>
-                        </li>
-                      </ul>
-                    </div>
+            {/* 1. ESTADO ACTUAL DE LA SUSCRIPCIÓN & BARRAS DE CONSUMO */}
+            <div className="bg-white rounded-2xl border border-zinc-200/80 shadow-xs overflow-hidden">
+              <div className="p-6 border-b border-zinc-100 flex flex-col md:flex-row md:items-center justify-between gap-4 bg-zinc-50/40">
+                <div className="space-y-1">
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <span className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
+                      Suscripción Actual
+                    </span>
+                    <span
+                      className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border ${statusBadge.bg}`}
+                    >
+                      <span className={`w-1.5 h-1.5 rounded-full ${statusBadge.dot}`} />
+                      {statusBadge.label}
+                    </span>
+                  </div>
+                  <div className="flex items-baseline gap-3">
+                    <h2 className="text-xl font-bold text-zinc-900 tracking-tight">
+                      Plan Kounta {subscription.plan.name}
+                    </h2>
+                    <span className="text-sm font-mono-numbers font-semibold text-zinc-600">
+                      {activeCompany?.base_currency === 'COP'
+                        ? `$${subscription.plan.priceCop.toLocaleString('es-CO')} COP / mes`
+                        : `$${subscription.plan.priceUsd} USD / mes`}
+                    </span>
+                  </div>
+                  <p className="text-xs text-zinc-500">{subscription.plan.tagline}</p>
+                </div>
 
+                {/* Renewal Date & Dev Status Simulator */}
+                <div className="flex flex-col sm:items-end gap-2">
+                  <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white border border-zinc-200/80 text-xs text-zinc-700 shadow-2xs">
+                    <Calendar className="w-3.5 h-3.5 text-zinc-400" />
+                    <span>Fecha de renovación:</span>
+                    <strong className="font-mono-numbers text-zinc-900">
+                      {formatDate(subscription.currentPeriodEnd)}
+                    </strong>
+                  </div>
+
+                  {/* Selector de estado para pruebas en desarrollo */}
+                  <div className="flex items-center gap-1.5 text-[11px] text-zinc-400">
+                    <span>Estado (Sandbox):</span>
+                    {(
+                      [
+                        { id: 'trialing', label: 'Prueba activa' },
+                        { id: 'active', label: 'Activo' },
+                        { id: 'past_due', label: 'Pago pendiente' },
+                      ] as { id: SubscriptionStatus; label: string }[]
+                    ).map((st) => (
+                      <button
+                        key={st.id}
+                        type="button"
+                        onClick={() => handleQuickStatusUpdate(st.id)}
+                        className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer ${
+                          subscription.status === st.id
+                            ? 'bg-zinc-900 text-white'
+                            : 'bg-zinc-100 text-zinc-600 hover:bg-zinc-200'
+                        }`}
+                      >
+                        {st.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Barras de Consumo / Uso en el Ciclo Actual */}
+              <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Consumo 1: Facturas creadas este mes vs. Límite del plan */}
+                <div className="p-4 rounded-xl border border-zinc-200/70 bg-zinc-50/30 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Receipt className="w-4 h-4 text-zinc-600" />
+                      <span className="text-xs font-semibold text-zinc-900">
+                        Facturas creadas este mes
+                      </span>
+                    </div>
+                    <span className="text-xs font-mono-numbers font-bold text-zinc-900">
+                      {monthlyInvoicesCount} /{' '}
+                      {subscription.isUnlimitedInvoices
+                        ? 'Ilimitadas'
+                        : `${subscription.maxInvoicesPerMonth} facturas`}
+                    </span>
+                  </div>
+
+                  <div className="h-2 w-full rounded-full bg-zinc-200/70 overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all duration-500 ${
+                        hasReachedInvoiceLimit
+                          ? 'bg-rose-600'
+                          : invoiceUsagePct > 80
+                          ? 'bg-amber-500'
+                          : 'bg-zinc-900'
+                      }`}
+                      style={{ width: `${invoiceUsagePct}%` }}
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between text-[11px] text-zinc-500">
+                    <span>
+                      {subscription.isUnlimitedInvoices
+                        ? 'Emisión mensual sin tope en tu plan actual'
+                        : hasReachedInvoiceLimit
+                        ? 'Has alcanzado el tope mensual de emisión'
+                        : `${Math.max(
+                            0,
+                            subscription.maxInvoicesPerMonth - monthlyInvoicesCount
+                          )} facturas disponibles este mes`}
+                    </span>
+                    <span className="font-mono-numbers text-zinc-400">
+                      Histórico: {invoicesCount}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Consumo 2: Miembros activos en el equipo vs. Límite del plan */}
+                <div className="p-4 rounded-xl border border-zinc-200/70 bg-zinc-50/30 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Users className="w-4 h-4 text-zinc-600" />
+                      <span className="text-xs font-semibold text-zinc-900">
+                        Miembros activos en el equipo
+                      </span>
+                    </div>
+                    <span className="text-xs font-mono-numbers font-bold text-zinc-900">
+                      {members.length} /{' '}
+                      {subscription.isUnlimitedMembers
+                        ? 'Ilimitados'
+                        : `${subscription.maxMembers} miembros`}
+                    </span>
+                  </div>
+
+                  <div className="h-2 w-full rounded-full bg-zinc-200/70 overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all duration-500 ${
+                        hasReachedMemberLimit
+                          ? 'bg-rose-600'
+                          : memberUsagePct > 80
+                          ? 'bg-amber-500'
+                          : 'bg-zinc-900'
+                      }`}
+                      style={{ width: `${memberUsagePct}%` }}
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between text-[11px] text-zinc-500">
+                    <span>
+                      {subscription.isUnlimitedMembers
+                        ? 'Asientos corporativos ilimitados habilitados'
+                        : hasReachedMemberLimit
+                        ? 'Capacidad máxima del equipo alcanzada'
+                        : `${Math.max(
+                            0,
+                            subscription.maxMembers - members.length
+                          )} asientos disponibles`}
+                    </span>
                     <button
                       type="button"
-                      disabled={isCurrent}
-                      onClick={() => {
-                        setSelectedPlan(plan.id);
-                        setToast({
-                          id: String(Date.now()),
-                          type: 'success',
-                          title: `Plan actualizado a Kounta ${plan.name}`,
-                          description: 'Los nuevos límites de tu suscripción ya están activos.',
-                        });
-                      }}
-                      className={`mt-5 w-full py-2 px-3 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
-                        isCurrent
-                          ? 'bg-zinc-100 text-zinc-500 cursor-default'
-                          : 'bg-zinc-900 hover:bg-zinc-800 text-white'
-                      }`}
+                      onClick={() => handleTabSwitch('team')}
+                      className="text-zinc-700 hover:text-zinc-900 font-medium underline underline-offset-2 cursor-pointer"
                     >
-                      {isCurrent ? 'Plan Activo' : `Cambiar a ${plan.name}`}
+                      Ver equipo →
                     </button>
                   </div>
-                );
-              })}
+                </div>
+              </div>
             </div>
 
-            {/* Límites del Plan y Método de Pago */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-              {/* Uso actual del plan (7 cols) */}
-              <div className="lg:col-span-7 bg-white rounded-2xl border border-zinc-200/80 shadow-xs p-6 space-y-5">
+            {/* 2. TABLA COMPARATIVA DE PLANES (PRICING TIERS) */}
+            <div>
+              <div className="mb-3 flex items-center justify-between">
                 <div>
                   <h3 className="text-sm font-semibold text-zinc-900">
-                    Consumo y Límites del Plan ({selectedPlan})
+                    Planes Disponibles (Pricing Tiers)
                   </h3>
-                  <p className="text-xs text-zinc-500 mt-0.5">
-                    Métricas en tiempo real del ciclo de facturación actual
+                  <p className="text-xs text-zinc-500">
+                    Escala tu operación contable en cualquier momento. Los nuevos límites se aplican de inmediato en Supabase.
                   </p>
                 </div>
+                <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-mono-numbers text-zinc-500 bg-white px-2.5 py-1 rounded-lg border border-zinc-200/80">
+                  Precios expresados en USD y equivalente COP
+                </span>
+              </div>
 
-                {/* Progress 1: Colaboradores */}
-                <div className="space-y-1.5">
-                  <div className="flex justify-between text-xs">
-                    <span className="font-medium text-zinc-700">
-                      Colaboradores en el Equipo
-                    </span>
-                    <span className="font-mono-numbers font-semibold text-zinc-900">
-                      {members.length} /{' '}
-                      {selectedPlan === 'STARTER'
-                        ? 3
-                        : selectedPlan === 'GROWTH'
-                        ? 10
-                        : 'Ilimitados'}
-                    </span>
-                  </div>
-                  <div className="h-2 w-full rounded-full bg-zinc-100 overflow-hidden">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {(Object.values(SUBSCRIPTION_PLANS) as PlanDefinition[]).map((plan) => {
+                  const isCurrent = subscription.tier === plan.id;
+
+                  return (
                     <div
-                      className="h-full bg-zinc-900 rounded-full transition-all duration-300"
-                      style={{
-                        width: `${Math.min(
-                          100,
-                          (members.length /
-                            (selectedPlan === 'STARTER'
-                              ? 3
-                              : selectedPlan === 'GROWTH'
-                              ? 10
-                              : 50)) *
-                            100
-                        )}%`,
-                      }}
-                    />
-                  </div>
+                      key={plan.id}
+                      className={`rounded-2xl border p-6 flex flex-col justify-between transition-all relative ${
+                        isCurrent
+                          ? 'bg-white border-zinc-900 ring-1 ring-zinc-900 shadow-sm'
+                          : plan.popular
+                          ? 'bg-white border-zinc-300 shadow-xs'
+                          : 'bg-white border-zinc-200/80 hover:border-zinc-300'
+                      }`}
+                    >
+                      {plan.popular && !isCurrent && (
+                        <span className="absolute -top-2.5 right-4 px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-zinc-900 text-white shadow-2xs">
+                          Recomendado
+                        </span>
+                      )}
+
+                      <div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="text-base font-bold text-zinc-900">
+                            {plan.name}
+                          </span>
+                          {isCurrent && (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                              Plan Actual
+                            </span>
+                          )}
+                        </div>
+
+                        <p className="text-xs text-zinc-500 min-h-[32px] leading-relaxed">
+                          {plan.tagline}
+                        </p>
+
+                        <div className="mt-4 pb-4 border-b border-zinc-100">
+                          <div className="flex items-baseline gap-1.5">
+                            <span className="text-3xl font-bold font-mono-numbers text-zinc-900 tracking-tight">
+                              ${plan.priceUsd}
+                            </span>
+                            <span className="text-xs font-medium text-zinc-500">
+                              USD / mes
+                            </span>
+                          </div>
+                          <div className="text-[11px] font-mono-numbers text-zinc-400 mt-0.5">
+                            o ${plan.priceCop.toLocaleString('es-CO')} COP / mes
+                          </div>
+                        </div>
+
+                        <ul className="mt-4 space-y-2.5 text-xs text-zinc-700">
+                          {plan.features.map((feat, idx) => (
+                            <li key={idx} className="flex items-start gap-2">
+                              <Check className="w-3.5 h-3.5 text-zinc-900 shrink-0 mt-0.5" />
+                              <span>{feat}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+
+                      <div className="mt-6 pt-4 border-t border-zinc-100">
+                        <button
+                          type="button"
+                          onClick={() => setCheckoutTargetPlan(plan)}
+                          className={`w-full py-2.5 px-3.5 rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                            isCurrent
+                              ? 'bg-zinc-100 hover:bg-zinc-200/80 text-zinc-800 border border-zinc-200'
+                              : 'bg-zinc-900 hover:bg-zinc-800 text-white shadow-xs'
+                          }`}
+                        >
+                          {isCurrent ? (
+                            <>
+                              <span>Gestionar suscripción</span>
+                            </>
+                          ) : (
+                            <>
+                              <span>Cambiar a {plan.name}</span>
+                              <ArrowUpRight className="w-3.5 h-3.5" />
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* 3. MÉTODO DE PAGO & PORTAL DE FACTURACIÓN */}
+            <div className="bg-white rounded-2xl border border-zinc-200/80 shadow-xs p-6 flex flex-col md:flex-row md:items-center justify-between gap-6">
+              <div className="flex items-start sm:items-center gap-4">
+                <div className="h-12 w-16 rounded-xl bg-zinc-950 text-white flex flex-col items-center justify-center font-mono-numbers text-[10px] shrink-0 shadow-xs">
+                  <CreditCard className="w-4 h-4 mb-0.5 text-zinc-300" />
+                  <span>4242</span>
                 </div>
-
-                {/* Progress 2: Facturas emitidas este mes */}
-                <div className="space-y-1.5">
-                  <div className="flex justify-between text-xs">
-                    <span className="font-medium text-zinc-700">
-                      Facturas Emitidas este Mes
-                    </span>
-                    <span className="font-mono-numbers font-semibold text-zinc-900">
-                      {monthlyInvoicesCount} /{' '}
-                      {selectedPlan === 'STARTER'
-                        ? 50
-                        : selectedPlan === 'GROWTH'
-                        ? 500
-                        : '10,000'}
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-semibold text-zinc-900">
+                      Visa Corporativa terminada en 4242
+                    </h3>
+                    <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200/70">
+                      Predeterminada
                     </span>
                   </div>
-                  <div className="h-2 w-full rounded-full bg-zinc-100 overflow-hidden">
-                    <div
-                      className="h-full bg-indigo-600 rounded-full transition-all duration-300"
-                      style={{
-                        width: `${Math.min(
-                          100,
-                          Math.max(
-                            4,
-                            (monthlyInvoicesCount /
-                              (selectedPlan === 'STARTER'
-                                ? 50
-                                : selectedPlan === 'GROWTH'
-                                ? 500
-                                : 10000)) *
-                              100
-                          )
-                        )}%`,
-                      }}
-                    />
-                  </div>
-                  <p className="text-[11px] text-zinc-400">
-                    Total histórico acumulado: {invoicesCount} comprobantes
+                  <p className="text-xs text-zinc-500 mt-0.5 font-mono-numbers">
+                    Expira 08/2028 · Facturación enviada a {user?.email}
                   </p>
                 </div>
               </div>
 
-              {/* Tarjeta de Resumen de Pago (5 cols) */}
-              <div className="lg:col-span-5 bg-white rounded-2xl border border-zinc-200/80 shadow-xs p-6 flex flex-col justify-between space-y-5">
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-sm font-semibold text-zinc-900">
-                      Método de Pago
-                    </h3>
-                    <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200/60">
-                      Al día
-                    </span>
-                  </div>
-
-                  {/* Visual Corporate Card */}
-                  <div className="p-4 rounded-xl bg-zinc-950 text-white space-y-4">
-                    <div className="flex items-center justify-between text-xs text-zinc-400">
-                      <span>Tarjeta Corporativa</span>
-                      <CreditCard className="w-4 h-4 text-zinc-300" />
-                    </div>
-                    <div className="font-mono-numbers text-sm tracking-widest">
-                      •••• •••• •••• 4242
-                    </div>
-                    <div className="flex items-center justify-between text-[11px] text-zinc-400">
-                      <span>{activeCompany?.legal_name}</span>
-                      <span className="font-mono-numbers">EXP 08/28</span>
-                    </div>
-                  </div>
-
-                  <div className="space-y-1.5 text-xs">
-                    <div className="flex justify-between text-zinc-500">
-                      <span>Próximo corte:</span>
-                      <span className="font-mono-numbers text-zinc-900 font-medium">
-                        01 Nov 2026
-                      </span>
-                    </div>
-                    <div className="flex justify-between text-zinc-500">
-                      <span>Facturación a:</span>
-                      <span className="font-mono-numbers text-zinc-900">
-                        {user?.email}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
+              <div className="flex items-center gap-2.5 self-start md:self-auto">
                 <button
                   type="button"
-                  onClick={() =>
-                    setToast({
-                      id: String(Date.now()),
-                      type: 'success',
-                      title: 'Pasarela de pagos lista',
-                      description: 'Integración con Stripe Billing preparada para producción.',
-                    })
-                  }
-                  className="w-full py-2 px-3 rounded-lg bg-white hover:bg-zinc-50 text-zinc-800 border border-zinc-200 text-xs font-medium transition-colors cursor-pointer"
+                  onClick={() => setCheckoutTargetPlan(subscription.plan)}
+                  className="px-3.5 py-2 rounded-lg bg-white hover:bg-zinc-50 text-zinc-800 border border-zinc-200 text-xs font-medium transition-colors cursor-pointer"
                 >
-                  Actualizar Método de Pago
+                  Customer Portal (Stripe Stub)
                 </button>
               </div>
             </div>
@@ -1182,7 +1386,127 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
       </main>
 
       {/* ============================================================ */}
-      {/* MODAL: INVITAR MIEMBRO                                       */}
+      {/* MODAL: STRIPE CHECKOUT / CAMBIO DE PLAN                      */}
+      {/* ============================================================ */}
+      {checkoutTargetPlan && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-900/40 backdrop-blur-xs animate-in fade-in duration-150"
+          onClick={() => !processingCheckout && setCheckoutTargetPlan(null)}
+        >
+          <div
+            className="bg-white rounded-2xl border border-zinc-200 shadow-xl max-w-md w-full overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-6 py-4 border-b border-zinc-100 bg-zinc-50/60 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-zinc-900 text-white">
+                  <CreditCard className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-zinc-900">
+                    {checkoutTargetPlan.id === subscription.tier
+                      ? `Gestionar Plan Kounta ${checkoutTargetPlan.name}`
+                      : `Confirmar Cambio a Kounta ${checkoutTargetPlan.name}`}
+                  </h3>
+                  <p className="text-[11px] text-zinc-500">
+                    Stripe Checkout Session (Entorno Desarrollo)
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={processingCheckout}
+                onClick={() => setCheckoutTargetPlan(null)}
+                className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div className="p-4 rounded-xl bg-zinc-50 border border-zinc-200/80 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-zinc-900">
+                    Plan Kounta {checkoutTargetPlan.name}
+                  </span>
+                  <span className="text-sm font-bold font-mono-numbers text-zinc-900">
+                    {activeCompany?.base_currency === 'COP'
+                      ? `$${checkoutTargetPlan.priceCop.toLocaleString('es-CO')} COP/mes`
+                      : `$${checkoutTargetPlan.priceUsd} USD/mes`}
+                  </span>
+                </div>
+                <p className="text-[11px] text-zinc-500">{checkoutTargetPlan.tagline}</p>
+
+                <div className="pt-2 border-t border-zinc-200/60 grid grid-cols-2 gap-2 text-[11px]">
+                  <div>
+                    <span className="text-zinc-400 block">Límite Facturas / mes:</span>
+                    <strong className="font-mono-numbers text-zinc-800">
+                      {checkoutTargetPlan.isUnlimitedInvoices
+                        ? 'Ilimitadas (999.999)'
+                        : `${checkoutTargetPlan.maxInvoicesPerMonth} facturas`}
+                    </strong>
+                  </div>
+                  <div>
+                    <span className="text-zinc-400 block">Límite Miembros:</span>
+                    <strong className="font-mono-numbers text-zinc-800">
+                      {checkoutTargetPlan.isUnlimitedMembers
+                        ? 'Ilimitados (999.999)'
+                        : `${checkoutTargetPlan.maxMembers} miembros`}
+                    </strong>
+                  </div>
+                </div>
+              </div>
+
+              <div className="text-[11px] text-zinc-500 leading-relaxed">
+                Al confirmar, se actualizarán inmediatamente en Supabase los campos{' '}
+                <code className="text-[10px] bg-zinc-100 px-1 py-0.5 rounded">
+                  subscription_tier = &apos;{checkoutTargetPlan.id}&apos;
+                </code>
+                ,{' '}
+                <code className="text-[10px] bg-zinc-100 px-1 py-0.5 rounded">
+                  max_invoices_per_month
+                </code>{' '}
+                y{' '}
+                <code className="text-[10px] bg-zinc-100 px-1 py-0.5 rounded">
+                  max_members
+                </code>{' '}
+                para <strong>{activeCompany?.name}</strong>.
+              </div>
+
+              <div className="pt-3 border-t border-zinc-100 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={processingCheckout}
+                  onClick={() => setCheckoutTargetPlan(null)}
+                  className="px-3.5 py-2 text-xs font-medium text-zinc-600 hover:text-zinc-900 rounded-lg transition-colors cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  disabled={processingCheckout}
+                  onClick={handleConfirmPlanChange}
+                  className="px-4 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-white text-xs font-medium shadow-xs transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  {processingCheckout ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                  )}
+                  <span>
+                    {checkoutTargetPlan.id === subscription.tier
+                      ? 'Renovar / Sincronizar Plan'
+                      : `Confirmar Upgrade a ${checkoutTargetPlan.name}`}
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================ */}
+      {/* MODAL: INVITAR MIEMBRO (CON VALIDACIÓN DE MAX_MEMBERS)       */}
       {/* ============================================================ */}
       {isInviteModalOpen && (
         <div
@@ -1202,7 +1526,13 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
                   <h3 className="text-sm font-semibold text-zinc-900">
                     Invitar Miembro al Equipo
                   </h3>
-                  <p className="text-[11px] text-zinc-500">{activeCompany?.name}</p>
+                  <p className="text-[11px] text-zinc-500">
+                    {activeCompany?.name} ·{' '}
+                    <span className="font-mono-numbers">
+                      {members.length}/
+                      {subscription.isUnlimitedMembers ? '∞' : subscription.maxMembers} miembros
+                    </span>
+                  </p>
                 </div>
               </div>
               <button
@@ -1214,102 +1544,138 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
               </button>
             </div>
 
-            <form onSubmit={handleInviteMember} className="p-6 space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-zinc-700 mb-1.5">
-                  Correo electrónico del colaborador <span className="text-rose-500">*</span>
-                </label>
-                <div className="relative">
-                  <Mail className="w-3.5 h-3.5 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="email"
-                    required
-                    value={inviteEmail}
-                    onChange={(e) => setInviteEmail(e.target.value)}
-                    placeholder="colaborador@empresa.com"
-                    className="w-full pl-9 pr-3.5 py-2 text-xs bg-zinc-50/70 border border-zinc-200 rounded-lg text-zinc-900 placeholder-zinc-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-zinc-900/10 focus:border-zinc-900"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-zinc-700 mb-1.5">
-                  Rol asignado
-                </label>
-                <select
-                  value={inviteRole}
-                  onChange={(e) => setInviteRole(e.target.value as CompanyRole)}
-                  className="w-full px-3 py-2 text-xs bg-zinc-50/70 border border-zinc-200 rounded-lg text-zinc-900 font-medium focus:bg-white focus:outline-none focus:border-zinc-900 cursor-pointer"
-                >
-                  <option value="WORKER">WORKER — Operativo (Facturas y Clientes)</option>
-                  <option value="ADMIN">ADMIN — Administrador Total (Configuración y Equipo)</option>
-                </select>
-                <p className="mt-1.5 text-[11px] text-zinc-500 leading-relaxed">
-                  {inviteRole === 'ADMIN'
-                    ? 'Tendrá control total sobre la configuración fiscal, facturación, anulación de documentos y gestión de usuarios.'
-                    : 'Podrá consultar y emitir facturas y clientes, sin acceso a ajustes de empresa ni gestión del equipo.'}
-                </p>
-              </div>
-
-              {generatedInviteLink && (
-                <div className="p-3.5 rounded-xl bg-zinc-50 border border-zinc-200 space-y-2">
-                  <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-800">
-                    <Link2 className="w-3.5 h-3.5 text-indigo-600" />
-                    <span>Usuario nuevo — Enlace de acceso directo</span>
+            {hasReachedMemberLimit ? (
+              <div className="p-6 space-y-4">
+                <div className="p-4 rounded-xl bg-amber-50 border border-amber-200/80 text-amber-900 space-y-2">
+                  <div className="flex items-center gap-2 font-semibold text-xs">
+                    <Lock className="w-4 h-4 text-amber-700" />
+                    <span>Límite de miembros alcanzado ({members.length}/{subscription.maxMembers})</span>
                   </div>
-                  <p className="text-[11px] text-zinc-500 leading-relaxed">
-                    Este correo aún no tiene cuenta en Kounta. Comparte este enlace para que al registrarse quede vinculado automáticamente a <strong>{activeCompany?.name}</strong>:
+                  <p className="text-xs text-amber-800 leading-relaxed">
+                    Has alcanzado el máximo de miembros permitidos en tu plan{' '}
+                    <strong>{subscription.plan.name}</strong>. Mejora a{' '}
+                    <strong>
+                      {subscription.tier === 'starter' ? 'Growth' : 'Enterprise'}
+                    </strong>{' '}
+                    para expandir tu equipo contable.
                   </p>
-                  <div className="flex items-center gap-2">
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsInviteModalOpen(false)}
+                    className="px-3.5 py-2 text-xs font-medium text-zinc-600 hover:text-zinc-900 rounded-lg cursor-pointer"
+                  >
+                    Cerrar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsInviteModalOpen(false);
+                      handleTabSwitch('billing');
+                    }}
+                    className="px-4 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-white text-xs font-medium flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Zap className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Ver Planes y Mejorar</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={handleInviteMember} className="p-6 space-y-4">
+                <div>
+                  <label className="block text-xs font-medium text-zinc-700 mb-1.5">
+                    Correo electrónico del colaborador <span className="text-rose-500">*</span>
+                  </label>
+                  <div className="relative">
+                    <Mail className="w-3.5 h-3.5 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
                     <input
-                      type="text"
-                      readOnly
-                      value={generatedInviteLink}
-                      className="flex-1 px-2.5 py-1.5 text-[11px] font-mono-numbers bg-white border border-zinc-200 rounded-md text-zinc-700"
+                      type="email"
+                      required
+                      value={inviteEmail}
+                      onChange={(e) => setInviteEmail(e.target.value)}
+                      placeholder="colaborador@empresa.com"
+                      className="w-full pl-9 pr-3.5 py-2 text-xs bg-zinc-50/70 border border-zinc-200 rounded-lg text-zinc-900 placeholder-zinc-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-zinc-900/10 focus:border-zinc-900"
                     />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        navigator.clipboard.writeText(generatedInviteLink);
-                        setCopiedLink(true);
-                        setTimeout(() => setCopiedLink(false), 2000);
-                      }}
-                      className="px-3 py-1.5 rounded-md bg-zinc-900 text-white text-[11px] font-medium flex items-center gap-1 shrink-0 cursor-pointer"
-                    >
-                      {copiedLink ? (
-                        <>
-                          <Check className="w-3 h-3 text-emerald-400" />
-                          <span>Copiado</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3 h-3" />
-                          <span>Copiar</span>
-                        </>
-                      )}
-                    </button>
                   </div>
                 </div>
-              )}
 
-              <div className="pt-3 border-t border-zinc-100 flex items-center justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setIsInviteModalOpen(false)}
-                  className="px-3.5 py-2 text-xs font-medium text-zinc-600 hover:text-zinc-900 rounded-lg transition-colors cursor-pointer"
-                >
-                  Cerrar
-                </button>
-                <button
-                  type="submit"
-                  disabled={inviting}
-                  className="px-4 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-white text-xs font-medium shadow-xs transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                >
-                  {inviting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                  <span>Enviar / Vincular</span>
-                </button>
-              </div>
-            </form>
+                <div>
+                  <label className="block text-xs font-medium text-zinc-700 mb-1.5">
+                    Rol asignado
+                  </label>
+                  <select
+                    value={inviteRole}
+                    onChange={(e) => setInviteRole(e.target.value as CompanyRole)}
+                    className="w-full px-3 py-2 text-xs bg-zinc-50/70 border border-zinc-200 rounded-lg text-zinc-900 font-medium focus:bg-white focus:outline-none focus:border-zinc-900 cursor-pointer"
+                  >
+                    <option value="WORKER">WORKER — Operativo (Facturas y Clientes)</option>
+                    <option value="ADMIN">ADMIN — Administrador Total (Configuración y Equipo)</option>
+                  </select>
+                </div>
+
+                {generatedInviteLink && (
+                  <div className="p-3.5 rounded-xl bg-zinc-50 border border-zinc-200 space-y-2">
+                    <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-800">
+                      <Link2 className="w-3.5 h-3.5 text-indigo-600" />
+                      <span>Usuario nuevo — Enlace de acceso directo</span>
+                    </div>
+                    <p className="text-[11px] text-zinc-500 leading-relaxed">
+                      Comparte este enlace para que al registrarse quede vinculado automáticamente a{' '}
+                      <strong>{activeCompany?.name}</strong>:
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        readOnly
+                        value={generatedInviteLink}
+                        className="flex-1 px-2.5 py-1.5 text-[11px] font-mono-numbers bg-white border border-zinc-200 rounded-md text-zinc-700"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard.writeText(generatedInviteLink);
+                          setCopiedLink(true);
+                          setTimeout(() => setCopiedLink(false), 2000);
+                        }}
+                        className="px-3 py-1.5 rounded-md bg-zinc-900 text-white text-[11px] font-medium flex items-center gap-1 shrink-0 cursor-pointer"
+                      >
+                        {copiedLink ? (
+                          <>
+                            <Check className="w-3 h-3 text-emerald-400" />
+                            <span>Copiado</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3 h-3" />
+                            <span>Copiar</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="pt-3 border-t border-zinc-100 flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsInviteModalOpen(false)}
+                    className="px-3.5 py-2 text-xs font-medium text-zinc-600 hover:text-zinc-900 rounded-lg transition-colors cursor-pointer"
+                  >
+                    Cerrar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={inviting}
+                    className="px-4 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-white text-xs font-medium shadow-xs transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  >
+                    {inviting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                    <span>Enviar / Vincular</span>
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       )}
@@ -1339,7 +1705,7 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
                   <strong className="text-zinc-800">
                     {memberToRevoke.user?.email || 'este usuario'}
                   </strong>{' '}
-                  de <strong>{activeCompany?.name}</strong>. Perderá inmediatamente el acceso a las facturas y clientes de esta organización.
+                  de <strong>{activeCompany?.name}</strong>.
                 </p>
               </div>
             </div>

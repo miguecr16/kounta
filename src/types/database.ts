@@ -1,6 +1,8 @@
 export type CountryCode = 'CO' | 'US';
 export type CompanyRole = 'ADMIN' | 'WORKER';
 export type InvoiceStatus = 'DRAFT' | 'ISSUED' | 'PARTIAL_PAID' | 'PAID' | 'VOID';
+export type SubscriptionTier = 'starter' | 'growth' | 'enterprise';
+export type SubscriptionStatus = 'trialing' | 'active' | 'past_due' | 'canceled';
 
 export interface Company {
   id: string;
@@ -9,6 +11,11 @@ export interface Company {
   country: CountryCode;
   tax_id: string;
   base_currency: 'COP' | 'USD';
+  subscription_tier?: SubscriptionTier | null;
+  subscription_status?: SubscriptionStatus | null;
+  current_period_end?: string | null;
+  max_invoices_per_month?: number | null;
+  max_members?: number | null;
   created_at?: string;
 }
 

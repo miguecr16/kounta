@@ -7,6 +7,7 @@ import { useAuth } from '@/context/auth-context';
 import { createClient } from '@/lib/supabase/client';
 import { Customer, InvoiceStatus, TaxBreakdown } from '@/types/database';
 import { formatCurrency } from '@/lib/utils';
+import { getEffectiveSubscription } from '@/lib/billing/subscription-service';
 import {
   ArrowLeft,
   Plus,
@@ -22,7 +23,10 @@ import {
   AlertCircle,
   Building2,
   CheckCircle2,
-  Percent
+  Percent,
+  Lock,
+  Zap,
+  X,
 } from 'lucide-react';
 import { CreateCustomerModal } from '@/components/modals/create-customer-modal';
 import { Toast, ToastMessage } from '@/components/ui/toast';
@@ -48,6 +52,15 @@ export function NewInvoiceView() {
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>('');
   const [loadingInitial, setLoadingInitial] = useState(true);
   const [isCustomerModalOpen, setIsCustomerModalOpen] = useState(false);
+
+  // SaaS Plan Monthly Invoice Limit state
+  const [monthlyInvoicesCount, setMonthlyInvoicesCount] = useState<number>(0);
+  const [isLimitModalOpen, setIsLimitModalOpen] = useState<boolean>(false);
+
+  const subscription = getEffectiveSubscription(activeCompany);
+  const hasReachedMonthlyLimit =
+    !subscription.isUnlimitedInvoices &&
+    monthlyInvoicesCount >= subscription.maxInvoicesPerMonth;
 
   // General Invoice Data
   const [invoiceNumber, setInvoiceNumber] = useState('INV-0001');
@@ -103,7 +116,7 @@ export function NewInvoiceView() {
     );
   }, [activeCompany]);
 
-  // Fetch customers and compute automatic correlative number (e.g. INV-0001)
+  // Fetch customers, compute automatic correlative number & check monthly invoice count
   useEffect(() => {
     if (!activeCompany) return;
 
@@ -125,14 +138,20 @@ export function NewInvoiceView() {
           }
         }
 
-        // 2. Calculate next correlative invoice number (INV-0001, INV-0002, ...)
+        // 2. Calculate next correlative invoice number & current calendar month count
         const { data: invData } = await supabase
           .from('invoices')
-          .select('invoice_number')
+          .select('invoice_number, issue_date, created_at, status')
           .eq('company_id', activeCompany!.id);
 
         if (mounted) {
           let maxNumber = 0;
+          const now = new Date();
+          const currentMonthPrefix = `${now.getFullYear()}-${String(
+            now.getMonth() + 1
+          ).padStart(2, '0')}`;
+          let monthlyCount = 0;
+
           if (invData && invData.length > 0) {
             invData.forEach((row: any) => {
               const match = String(row.invoice_number || '').match(/(\d+)$/);
@@ -142,6 +161,14 @@ export function NewInvoiceView() {
                   maxNumber = num;
                 }
               }
+
+              if (
+                row.status !== 'VOID' &&
+                ((row.issue_date && String(row.issue_date).startsWith(currentMonthPrefix)) ||
+                  (row.created_at && String(row.created_at).startsWith(currentMonthPrefix)))
+              ) {
+                monthlyCount += 1;
+              }
             });
             if (maxNumber === 0) {
               maxNumber = invData.length;
@@ -149,6 +176,12 @@ export function NewInvoiceView() {
           }
           const nextCorrelative = String(maxNumber + 1).padStart(4, '0');
           setInvoiceNumber(`INV-${nextCorrelative}`);
+          setMonthlyInvoicesCount(monthlyCount);
+
+          const sub = getEffectiveSubscription(activeCompany);
+          if (!sub.isUnlimitedInvoices && monthlyCount >= sub.maxInvoicesPerMonth) {
+            setIsLimitModalOpen(true);
+          }
         }
       } catch (err) {
         console.error('Error initializing new invoice form:', err);
@@ -250,6 +283,14 @@ export function NewInvoiceView() {
   // Save / Issue Handler
   const handleSaveInvoice = async (targetStatus: 'DRAFT' | 'ISSUED') => {
     setErrorMessage(null);
+
+    if (hasReachedMonthlyLimit) {
+      setIsLimitModalOpen(true);
+      setErrorMessage(
+        `Has alcanzado el límite de facturas de tu plan ${subscription.plan.name}. Mejora a Growth para facturar de manera ilimitada.`
+      );
+      return;
+    }
 
     if (!activeCompany || !user) {
       setErrorMessage('Tu sesión o empresa activa no está disponible.');
@@ -379,6 +420,17 @@ export function NewInvoiceView() {
               <span className="px-2 py-0.5 rounded text-[10px] font-mono-numbers font-medium bg-zinc-100 text-zinc-700 border border-zinc-200">
                 {invoiceNumber}
               </span>
+              <span
+                className={`hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono-numbers font-medium border ${
+                  hasReachedMonthlyLimit
+                    ? 'bg-amber-50 text-amber-800 border-amber-200'
+                    : 'bg-zinc-50 text-zinc-500 border-zinc-200/70'
+                }`}
+              >
+                {subscription.isUnlimitedInvoices
+                  ? `Plan ${subscription.plan.name} · Ilimitadas`
+                  : `${monthlyInvoicesCount}/${subscription.maxInvoicesPerMonth} este mes (${subscription.plan.name})`}
+              </span>
             </div>
             <p className="text-[11px] text-zinc-500">
               {isColombia
@@ -391,9 +443,9 @@ export function NewInvoiceView() {
         <div className="flex items-center gap-2.5">
           <button
             type="button"
-            disabled={Boolean(savingStatus)}
+            disabled={Boolean(savingStatus) || hasReachedMonthlyLimit}
             onClick={() => handleSaveInvoice('DRAFT')}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-white hover:bg-zinc-50 text-zinc-800 border border-zinc-200/90 text-xs font-medium shadow-2xs transition-all cursor-pointer disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-white hover:bg-zinc-50 text-zinc-800 border border-zinc-200/90 text-xs font-medium shadow-2xs transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {savingStatus === 'DRAFT' ? (
               <Loader2 className="w-3.5 h-3.5 animate-spin text-zinc-600" />
@@ -405,12 +457,14 @@ export function NewInvoiceView() {
 
           <button
             type="button"
-            disabled={Boolean(savingStatus)}
+            disabled={Boolean(savingStatus) || hasReachedMonthlyLimit}
             onClick={() => handleSaveInvoice('ISSUED')}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-white text-xs font-medium tracking-tight shadow-xs transition-all cursor-pointer disabled:opacity-50"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-white text-xs font-medium tracking-tight shadow-xs transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {savingStatus === 'ISSUED' ? (
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : hasReachedMonthlyLimit ? (
+              <Lock className="w-3.5 h-3.5" />
             ) : (
               <Send className="w-3.5 h-3.5" />
             )}
@@ -420,6 +474,36 @@ export function NewInvoiceView() {
       </header>
 
       <main className="p-6 max-w-5xl w-full mx-auto space-y-6 pb-16">
+        {/* Banner de Límite Mensual de Facturación Alcanzado */}
+        {hasReachedMonthlyLimit && (
+          <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200/90 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-2xs">
+            <div className="flex items-start gap-3">
+              <div className="p-2 rounded-xl bg-amber-100 text-amber-800 shrink-0 mt-0.5">
+                <Lock className="w-4 h-4" />
+              </div>
+              <div>
+                <h3 className="text-xs font-semibold text-amber-950">
+                  Has alcanzado el límite de facturas de tu plan {subscription.plan.name}. Mejora a Growth para facturar de manera ilimitada.
+                </h3>
+                <p className="text-[11px] text-amber-800 mt-0.5">
+                  Consumo del mes actual:{' '}
+                  <strong className="font-mono-numbers">
+                    {monthlyInvoicesCount} / {subscription.maxInvoicesPerMonth} facturas
+                  </strong>
+                  . Actualiza tu suscripción en segundos para desbloquear la emisión ilimitada.
+                </p>
+              </div>
+            </div>
+            <Link
+              href="/settings/billing"
+              className="px-3.5 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-white text-xs font-medium flex items-center gap-1.5 shrink-0 shadow-2xs"
+            >
+              <Zap className="w-3.5 h-3.5 text-amber-400" />
+              <span>Mejorar a Growth →</span>
+            </Link>
+          </div>
+        )}
+
         {errorMessage && (
           <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-start gap-2.5 shadow-2xs">
             <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
@@ -1015,9 +1099,9 @@ export function NewInvoiceView() {
               <div className="pt-4 grid grid-cols-2 gap-2.5">
                 <button
                   type="button"
-                  disabled={Boolean(savingStatus)}
+                  disabled={Boolean(savingStatus) || hasReachedMonthlyLimit}
                   onClick={() => handleSaveInvoice('DRAFT')}
-                  className="w-full py-2.5 px-3 rounded-xl bg-zinc-100 hover:bg-zinc-200/80 text-zinc-800 text-xs font-medium transition-colors flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  className="w-full py-2.5 px-3 rounded-xl bg-zinc-100 hover:bg-zinc-200/80 text-zinc-800 text-xs font-medium transition-colors flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {savingStatus === 'DRAFT' ? (
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -1029,12 +1113,14 @@ export function NewInvoiceView() {
 
                 <button
                   type="button"
-                  disabled={Boolean(savingStatus)}
+                  disabled={Boolean(savingStatus) || hasReachedMonthlyLimit}
                   onClick={() => handleSaveInvoice('ISSUED')}
-                  className="w-full py-2.5 px-3 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-white text-xs font-medium shadow-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  className="w-full py-2.5 px-3 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-white text-xs font-medium shadow-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {savingStatus === 'ISSUED' ? (
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : hasReachedMonthlyLimit ? (
+                    <Lock className="w-3.5 h-3.5" />
                   ) : (
                     <Send className="w-3.5 h-3.5" />
                   )}
@@ -1045,6 +1131,65 @@ export function NewInvoiceView() {
           </div>
         </div>
       </main>
+
+      {/* Modal de Límite de Facturación Alcanzado */}
+      {isLimitModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-900/40 backdrop-blur-xs animate-in fade-in duration-150"
+          onClick={() => setIsLimitModalOpen(false)}
+        >
+          <div
+            className="bg-white rounded-2xl border border-zinc-200 shadow-xl max-w-md w-full p-6 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2.5 rounded-xl bg-amber-50 text-amber-700 border border-amber-200/70">
+                  <Lock className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-zinc-900">
+                    Límite Mensual de Facturación Alcanzado
+                  </h3>
+                  <p className="text-[11px] text-zinc-500 font-mono-numbers">
+                    {monthlyInvoicesCount} / {subscription.maxInvoicesPerMonth} facturas emitidas este mes
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsLimitModalOpen(false)}
+                className="p-1 text-zinc-400 hover:text-zinc-700 rounded-lg cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-4 rounded-xl bg-zinc-50 border border-zinc-200/80 text-xs text-zinc-700 leading-relaxed">
+              Has alcanzado el límite de facturas de tu plan{' '}
+              <strong>{subscription.plan.name}</strong>. Mejora a{' '}
+              <strong>Growth</strong> para facturar de manera ilimitada.
+            </div>
+
+            <div className="pt-2 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsLimitModalOpen(false)}
+                className="px-3.5 py-2 text-xs font-medium text-zinc-600 hover:text-zinc-900 rounded-lg cursor-pointer"
+              >
+                Entendido
+              </button>
+              <Link
+                href="/settings/billing"
+                className="px-4 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-white text-xs font-medium flex items-center gap-1.5 shadow-xs"
+              >
+                <Zap className="w-3.5 h-3.5 text-amber-400" />
+                <span>Mejorar a Growth →</span>
+              </Link>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Quick Create Customer Modal */}
       <CreateCustomerModal
