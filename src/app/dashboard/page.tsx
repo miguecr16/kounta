@@ -20,6 +20,7 @@ import {
   Wallet,
   TrendingUp,
   TrendingDown,
+  Landmark,
 } from 'lucide-react';
 import { CreateInvoiceModal } from '@/components/modals/create-invoice-modal';
 import { CreateCustomerModal } from '@/components/modals/create-customer-modal';
@@ -247,6 +248,13 @@ export default function DashboardPage() {
             >
               <BarChart3 className="w-3.5 h-3.5 text-zinc-500" />
               <span>Reportes P&L</span>
+            </Link>
+            <Link
+              href="/banking"
+              className="px-3 py-1.5 text-xs font-medium text-zinc-700 bg-white hover:bg-zinc-50 border border-zinc-200/90 rounded-lg flex items-center gap-1.5 transition-all shadow-2xs"
+            >
+              <Landmark className="w-3.5 h-3.5 text-zinc-500" />
+              <span>Bancos</span>
             </Link>
             <button
               type="button"

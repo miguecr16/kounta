@@ -117,3 +117,35 @@ export interface Expense {
   created_by?: string | null;
   created_at?: string;
 }
+
+export type BankAccountType = 'CHECKING' | 'SAVINGS' | 'CREDIT_CARD' | 'CASH';
+export type BankTransactionStatus = 'UNMATCHED' | 'MATCHED' | 'EXCLUDED';
+
+export interface BankAccount {
+  id: string;
+  company_id: string;
+  account_name: string;
+  institution_name: string;
+  account_type: BankAccountType;
+  currency: string;
+  current_balance: number;
+  last_four?: string | null;
+  created_at?: string;
+}
+
+export interface BankTransaction {
+  id: string;
+  company_id: string;
+  bank_account_id: string;
+  transaction_date: string;
+  description: string;
+  amount: number;
+  status: BankTransactionStatus;
+  matched_invoice_id?: string | null;
+  matched_expense_id?: string | null;
+  created_at?: string;
+  // relations
+  bank_account?: BankAccount;
+  matched_invoice?: Invoice;
+  matched_expense?: Expense;
+}

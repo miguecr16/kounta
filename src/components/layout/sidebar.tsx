@@ -17,7 +17,8 @@ import {
   Plus,
   Shield,
   Check,
-  Briefcase
+  Briefcase,
+  Landmark,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -46,6 +47,12 @@ export function Sidebar() {
       href: '/expenses',
       matchPaths: ['/expenses', '/dashboard/expenses'],
       icon: Wallet,
+    },
+    {
+      name: 'Bancos',
+      href: '/banking',
+      matchPaths: ['/banking', '/dashboard/banking'],
+      icon: Landmark,
     },
     {
       name: 'Clientes',

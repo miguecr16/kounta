@@ -1,6 +1,6 @@
 import { type ClassValue, clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { ExpenseCategory, InvoiceStatus } from '@/types/database';
+import { ExpenseCategory, InvoiceStatus, BankAccountType, BankTransactionStatus } from '@/types/database';
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -131,4 +131,93 @@ export function getExpenseCategoryBadge(category?: ExpenseCategory | string | nu
     label: category || 'Otros',
     badgeClass: 'bg-zinc-100 text-zinc-600 border-zinc-200/80',
   };
+}
+
+export const BANK_ACCOUNT_TYPE_OPTIONS: {
+  value: BankAccountType;
+  label: string;
+  description: string;
+}[] = [
+  {
+    value: 'CHECKING',
+    label: 'Cuenta Corriente',
+    description: 'Cuenta operativa para transferencias y cheques',
+  },
+  {
+    value: 'SAVINGS',
+    label: 'Cuenta de Ahorros',
+    description: 'Cuenta de ahorros e inversión con rendimientos',
+  },
+  {
+    value: 'CREDIT_CARD',
+    label: 'Tarjeta de Crédito',
+    description: 'Línea de crédito rotativo o tarjeta corporativa',
+  },
+  {
+    value: 'CASH',
+    label: 'Caja Menor / Efectivo',
+    description: 'Fondos en efectivo para gastos diarios menores',
+  },
+];
+
+export function getBankAccountTypeLabel(type?: BankAccountType | string | null): string {
+  switch (type) {
+    case 'CHECKING':
+      return 'Cuenta Corriente';
+    case 'SAVINGS':
+      return 'Cuenta de Ahorros';
+    case 'CREDIT_CARD':
+      return 'Tarjeta de Crédito';
+    case 'CASH':
+      return 'Caja Menor';
+    default:
+      return type || 'Cuenta Bancaria';
+  }
+}
+
+export function getBankTransactionStatusBadge(status: BankTransactionStatus) {
+  switch (status) {
+    case 'MATCHED':
+      return {
+        label: 'Conciliada',
+        bg: 'bg-emerald-50 text-emerald-700 border-emerald-200/60 dark:bg-emerald-950/30 dark:text-emerald-400 dark:border-emerald-800/40',
+        dot: 'bg-emerald-500',
+      };
+    case 'UNMATCHED':
+      return {
+        label: 'Por Revisar',
+        bg: 'bg-amber-50 text-amber-700 border-amber-200/60 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-800/40',
+        dot: 'bg-amber-500',
+      };
+    case 'EXCLUDED':
+      return {
+        label: 'Excluida',
+        bg: 'bg-zinc-100 text-zinc-600 border-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:border-zinc-700',
+        dot: 'bg-zinc-400',
+      };
+    default:
+      return {
+        label: status,
+        bg: 'bg-zinc-100 text-zinc-600 border-zinc-200',
+        dot: 'bg-zinc-400',
+      };
+  }
+}
+
+export function formatSignedCurrency(amount: number, currency: string = 'COP'): {
+  text: string;
+  isPositive: boolean;
+  isZero: boolean;
+} {
+  const isZero = amount === 0;
+  const isPositive = amount > 0;
+  const formatted = formatCurrency(Math.abs(amount), currency);
+
+  if (isZero) {
+    return { text: formatted, isPositive: false, isZero: true };
+  }
+  if (isPositive) {
+    return { text: `+${formatted}`, isPositive: true, isZero: false };
+  }
+  return { text: `-${formatted}`, isPositive: false, isZero: false };
 }
