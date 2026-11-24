@@ -16,6 +16,7 @@ export default function AuthPage() {
   const [successNotice, setSuccessNotice] = useState<string | null>(null);
   const [inviteCompanyId, setInviteCompanyId] = useState<string | null>(null);
   const [inviteRole, setInviteRole] = useState<CompanyRole>('WORKER');
+  const [selectedPlan, setSelectedPlan] = useState<string | null>(null);
 
   const supabase = createClient();
   const router = useRouter();
@@ -26,7 +27,15 @@ export default function AuthPage() {
       const invitedCo = params.get('invite_company');
       const invitedRole = params.get('role');
       const invitedEmail = params.get('email');
+      const paramMode = params.get('mode');
+      const paramPlan = params.get('plan');
 
+      if (paramMode === 'signup' || paramMode === 'signin') {
+        setMode(paramMode);
+      }
+      if (paramPlan) {
+        setSelectedPlan(paramPlan);
+      }
       if (invitedCo) {
         setInviteCompanyId(invitedCo);
         setMode('signup');
@@ -83,7 +92,8 @@ export default function AuthPage() {
             .limit(1);
 
           if (!memberRows || memberRows.length === 0) {
-            router.push('/onboarding');
+            const dest = selectedPlan ? `/onboarding?plan=${encodeURIComponent(selectedPlan)}` : '/onboarding';
+            router.push(dest);
           } else {
             router.push('/dashboard');
           }
@@ -140,7 +150,8 @@ export default function AuthPage() {
             }
           }
 
-          router.push('/onboarding');
+          const dest = selectedPlan ? `/onboarding?plan=${encodeURIComponent(selectedPlan)}` : '/onboarding';
+          router.push(dest);
         } else if (data.user && !data.session) {
           // Confirmation email sent
           setSuccessNotice(

@@ -1,10 +1,11 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, Suspense } from 'react';
 import { useAuth } from '@/context/auth-context';
 import { createClient } from '@/lib/supabase/client';
-import { useRouter } from 'next/navigation';
-import { CountryCode } from '@/types/database';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { CountryCode, SubscriptionTier } from '@/types/database';
+import { SUBSCRIPTION_PLANS } from '@/lib/billing/subscription-service';
 import {
   Building2,
   ArrowRight,
@@ -13,15 +14,23 @@ import {
   ShieldCheck,
   Globe2,
   Coins,
-  FileSpreadsheet,
+  Sparkles,
   AlertCircle
 } from 'lucide-react';
 
-export default function OnboardingPage() {
-  const { user, refreshTenantData, companies, isLoading: authLoading } = useAuth();
+function OnboardingContent() {
+  const { user, refreshTenantData } = useAuth();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const supabase = createClient();
 
+  const rawPlan = searchParams.get('plan')?.toLowerCase();
+  const initialTier: SubscriptionTier =
+    rawPlan && ['starter', 'growth', 'enterprise'].includes(rawPlan)
+      ? (rawPlan as SubscriptionTier)
+      : 'growth';
+
+  const [selectedTier, setSelectedTier] = useState<SubscriptionTier>(initialTier);
   const [name, setName] = useState('');
   const [legalName, setLegalName] = useState('');
   const [country, setCountry] = useState<CountryCode>('CO');
@@ -31,7 +40,9 @@ export default function OnboardingPage() {
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // If country changes, adapt default currency and reset/adapt placeholder
+  const planDef = SUBSCRIPTION_PLANS[selectedTier];
+
+  // If country changes, adapt default currency
   const handleCountryChange = (newCountry: CountryCode) => {
     setCountry(newCountry);
     if (newCountry === 'CO') {
@@ -69,7 +80,11 @@ export default function OnboardingPage() {
         console.log('User profile sync notice:', userErr);
       }
 
-      // 1. Insert into companies
+      // 14 days free trial end
+      const trialDays = 14;
+      const trialEndDate = new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000).toISOString();
+
+      // 1. Insert into companies with subscription fields
       const { data: companyData, error: companyError } = await supabase
         .from('companies')
         .insert({
@@ -78,6 +93,11 @@ export default function OnboardingPage() {
           country,
           tax_id: taxId.trim(),
           base_currency: baseCurrency,
+          subscription_tier: selectedTier,
+          subscription_status: 'trialing',
+          current_period_end: trialEndDate,
+          max_invoices_per_month: planDef.maxInvoicesPerMonth,
+          max_members: planDef.maxMembers,
         })
         .select()
         .single();
@@ -121,7 +141,7 @@ export default function OnboardingPage() {
 
   return (
     <div className="min-h-screen bg-zinc-50 flex flex-col justify-center py-12 px-4 sm:px-6 lg:px-8">
-      {/* Decorative clean background subtle pattern */}
+      {/* Subtle clean grid background */}
       <div className="absolute inset-0 bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] [background-size:16px_16px] [mask-image:radial-gradient(ellipse_50%_50%_at_50%_50%,#000_70%,transparent_100%)] pointer-events-none opacity-60" />
 
       <div className="relative sm:mx-auto sm:w-full sm:max-w-xl z-10">
@@ -141,6 +161,44 @@ export default function OnboardingPage() {
 
         {/* Card */}
         <div className="bg-white py-8 px-6 sm:px-8 shadow-xs border border-zinc-200/80 rounded-2xl">
+          {/* Plan Selected Badge / Info */}
+          <div className="mb-6 p-4 rounded-xl bg-zinc-50 border border-zinc-200/80 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-lg bg-indigo-600 text-white flex items-center justify-center font-bold text-xs shadow-xs">
+                <Sparkles className="w-4 h-4 text-white" />
+              </div>
+              <div>
+                <div className="text-xs font-semibold text-zinc-900 flex items-center gap-2">
+                  Plan seleccionado: <span className="text-indigo-600 uppercase tracking-wide">Kounta {planDef.name}</span>
+                  <span className="inline-flex items-center text-[10px] bg-emerald-50 text-emerald-700 font-medium px-2 py-0.5 rounded-full border border-emerald-200/60">
+                    14 días de prueba gratis
+                  </span>
+                </div>
+                <div className="text-[11px] text-zinc-500 mt-0.5">
+                  {planDef.isUnlimitedInvoices ? 'Facturación ilimitada' : `Hasta ${planDef.maxInvoicesPerMonth} facturas/mes`} · {planDef.isUnlimitedMembers ? 'Miembros ilimitados' : `Hasta ${planDef.maxMembers} miembros`}
+                </div>
+              </div>
+            </div>
+            
+            {/* Quick Plan Switcher */}
+            <div className="flex items-center gap-1 self-end sm:self-auto">
+              {(['starter', 'growth', 'enterprise'] as SubscriptionTier[]).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setSelectedTier(t)}
+                  className={`text-[10px] px-2 py-1 rounded font-medium transition-colors ${
+                    selectedTier === t
+                      ? 'bg-zinc-900 text-white'
+                      : 'bg-white border border-zinc-200 text-zinc-600 hover:bg-zinc-100'
+                  }`}
+                >
+                  {t.toUpperCase()}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {errorMessage && (
             <div className="mb-6 p-3.5 rounded-xl bg-rose-50/80 border border-rose-200/60 text-rose-800 text-xs flex items-start gap-2.5">
               <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
@@ -159,7 +217,7 @@ export default function OnboardingPage() {
                 <button
                   type="button"
                   onClick={() => handleCountryChange('CO')}
-                  className={`flex items-start gap-3 p-3.5 rounded-xl border text-left transition-all ${
+                  className={`flex items-start gap-3 p-3.5 rounded-xl border text-left transition-all cursor-pointer ${
                     country === 'CO'
                       ? 'border-zinc-900 bg-zinc-900/5 ring-1 ring-zinc-900'
                       : 'border-zinc-200 bg-zinc-50/50 hover:bg-zinc-50 hover:border-zinc-300'
@@ -175,7 +233,7 @@ export default function OnboardingPage() {
                 <button
                   type="button"
                   onClick={() => handleCountryChange('US')}
-                  className={`flex items-start gap-3 p-3.5 rounded-xl border text-left transition-all ${
+                  className={`flex items-start gap-3 p-3.5 rounded-xl border text-left transition-all cursor-pointer ${
                     country === 'US'
                       ? 'border-zinc-900 bg-zinc-900/5 ring-1 ring-zinc-900'
                       : 'border-zinc-200 bg-zinc-50/50 hover:bg-zinc-50 hover:border-zinc-300'
@@ -298,5 +356,19 @@ export default function OnboardingPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function OnboardingPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-zinc-50 flex items-center justify-center">
+          <Loader2 className="w-5 h-5 animate-spin text-zinc-500" />
+        </div>
+      }
+    >
+      <OnboardingContent />
+    </Suspense>
   );
 }
