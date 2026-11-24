@@ -5,6 +5,7 @@ import { useAuth } from '@/context/auth-context';
 import { createClient } from '@/lib/supabase/client';
 import { BankTransaction, Invoice } from '@/types/database';
 import { formatCurrency, formatDate } from '@/lib/utils';
+import { logAuditEvent } from '@/lib/audit';
 import {
   X,
   Receipt,
@@ -126,6 +127,33 @@ export function MatchInvoiceModal({
         .eq('id', selectedInvoiceId);
 
       if (invErr) throw invErr;
+
+      // Silently record audit events
+      await logAuditEvent({
+        companyId: activeCompany.id,
+        action: 'TRANSACTION_MATCHED',
+        entityType: 'BANK_TRANSACTION',
+        entityId: transaction.id,
+        details: {
+          description: transaction.description,
+          amount: transaction.amount,
+          currency,
+          matched_invoice_number: matchedInvoice.invoice_number,
+        },
+      });
+
+      await logAuditEvent({
+        companyId: activeCompany.id,
+        action: 'INVOICE_PAID',
+        entityType: 'INVOICE',
+        entityId: matchedInvoice.id,
+        details: {
+          invoice_number: matchedInvoice.invoice_number,
+          total: matchedInvoice.total,
+          currency: matchedInvoice.currency,
+          method: 'Conciliación Bancaria',
+        },
+      });
 
       onMatched(transaction.id, matchedInvoice);
       onClose();

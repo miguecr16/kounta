@@ -149,3 +149,33 @@ export interface BankTransaction {
   matched_invoice?: Invoice;
   matched_expense?: Expense;
 }
+
+export type AuditAction =
+  | 'INVOICE_CREATED'
+  | 'INVOICE_PAID'
+  | 'INVOICE_VOIDED'
+  | 'EXPENSE_CREATED'
+  | 'EXPENSE_DELETED'
+  | 'MEMBER_INVITED'
+  | 'ROLE_CHANGED'
+  | 'TRANSACTION_MATCHED';
+
+export type AuditEntityType =
+  | 'INVOICE'
+  | 'EXPENSE'
+  | 'MEMBER'
+  | 'BANK_TRANSACTION'
+  | 'COMPANY';
+
+export interface AuditLog {
+  id: string;
+  company_id: string;
+  user_id?: string | null;
+  action: AuditAction | string;
+  entity_type: AuditEntityType | string;
+  entity_id?: string | null;
+  details?: Record<string, any> | null;
+  created_at?: string;
+  // joined user profile
+  user?: UserProfile | null;
+}

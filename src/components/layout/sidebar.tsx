@@ -81,6 +81,7 @@ export function Sidebar() {
               '/settings/general',
               '/settings/team',
               '/settings/billing',
+              '/settings/audit',
               '/dashboard/settings',
             ],
             icon: Settings,

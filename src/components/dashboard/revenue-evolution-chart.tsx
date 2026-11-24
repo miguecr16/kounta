@@ -3,6 +3,7 @@
 import React, { useState, useMemo } from 'react';
 import { Invoice } from '@/types/database';
 import { formatCurrency } from '@/lib/utils';
+import { getInvoiceAmountInBase } from '@/lib/currency';
 import { BarChart3, TrendingUp, Calendar } from 'lucide-react';
 
 export interface MonthlyRevenuePoint {
@@ -93,7 +94,7 @@ export function RevenueEvolutionChart({
       const bucket = bucketMap.get(monthKey);
       if (!bucket) return;
 
-      const amount = Number(inv.total) || 0;
+      const amount = getInvoiceAmountInBase(inv, currency);
       bucket.billed += amount;
       bucket.invoiceCount += 1;
 
@@ -105,7 +106,7 @@ export function RevenueEvolutionChart({
     });
 
     return buckets;
-  }, [invoices]);
+  }, [invoices, currency]);
 
   const maxAmount = useMemo(() => {
     const m = Math.max(...monthlyData.map((d) => d.billed), 0);

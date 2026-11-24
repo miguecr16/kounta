@@ -14,6 +14,7 @@ import {
 } from '@/lib/utils';
 import { CreateExpenseModal } from '@/components/modals/create-expense-modal';
 import { Toast, ToastMessage } from '@/components/ui/toast';
+import { logAuditEvent } from '@/lib/audit';
 import {
   Wallet,
   Plus,
@@ -192,6 +193,21 @@ export function ExpensesView() {
         .eq('company_id', activeCompany.id);
 
       if (error) throw error;
+
+      // Silently record audit event
+      await logAuditEvent({
+        companyId: activeCompany.id,
+        action: 'EXPENSE_DELETED',
+        entityType: 'EXPENSE',
+        entityId: expenseToDelete.id,
+        details: {
+          vendor_name: expenseToDelete.vendor_name,
+          category: expenseToDelete.category,
+          amount: expenseToDelete.amount,
+          currency: expenseToDelete.currency,
+          expense_date: expenseToDelete.expense_date,
+        },
+      });
 
       setExpenses((prev) => prev.filter((e) => e.id !== expenseToDelete.id));
       setToast({

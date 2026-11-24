@@ -10,8 +10,10 @@ import {
   CountryCode,
   SubscriptionStatus,
   SubscriptionTier,
+  AuditLog,
+  AuditEntityType,
 } from '@/types/database';
-import { formatDate } from '@/lib/utils';
+import { formatDate, formatDateTime } from '@/lib/utils';
 import {
   SUBSCRIPTION_PLANS,
   getEffectiveSubscription,
@@ -19,6 +21,11 @@ import {
   processSubscriptionChange,
   PlanDefinition,
 } from '@/lib/billing/subscription-service';
+import {
+  logAuditEvent,
+  getAuditActionBadge,
+  getAuditReadableDescription,
+} from '@/lib/audit';
 import {
   Building2,
   Users,
@@ -42,10 +49,14 @@ import {
   Calendar,
   Zap,
   CheckCircle2,
+  History,
+  Search,
+  Filter,
+  RefreshCw,
 } from 'lucide-react';
 import { Toast, ToastMessage } from '@/components/ui/toast';
 
-export type SettingsTab = 'general' | 'team' | 'billing';
+export type SettingsTab = 'general' | 'team' | 'billing' | 'audit';
 
 interface PendingInvitation {
   id: string;
@@ -118,6 +129,14 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
   const [checkoutTargetPlan, setCheckoutTargetPlan] = useState<PlanDefinition | null>(null);
   const [processingCheckout, setProcessingCheckout] = useState(false);
   const [simulatedStatus, setSimulatedStatus] = useState<SubscriptionStatus>('active');
+
+  // ==========================================
+  // TAB 4 STATE: REGISTRO DE AUDITORÍA
+  // ==========================================
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [loadingAuditLogs, setLoadingAuditLogs] = useState(false);
+  const [auditEntityTypeFilter, setAuditEntityTypeFilter] = useState<'ALL' | AuditEntityType>('ALL');
+  const [auditSearchQuery, setAuditSearchQuery] = useState('');
 
   // Effective subscription derived from activeCompany
   const subscription = useMemo(
@@ -221,6 +240,73 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
     loadSettingsData();
   }, [loadSettingsData]);
 
+  // ==========================================
+  // AUDIT LOGS LOADER & FILTERING
+  // ==========================================
+  const loadAuditLogs = useCallback(async () => {
+    if (!activeCompany) return;
+    setLoadingAuditLogs(true);
+    try {
+      const { data, error } = await supabase
+        .from('audit_logs')
+        .select('*')
+        .eq('company_id', activeCompany.id)
+        .order('created_at', { ascending: false })
+        .limit(100);
+
+      if (error) throw error;
+      const logs = (data as AuditLog[]) || [];
+
+      // Resolve user details for logs that have user_id
+      const userIds = Array.from(new Set(logs.map((l) => l.user_id).filter(Boolean)));
+      if (userIds.length > 0) {
+        const { data: usersData } = await supabase
+          .from('users')
+          .select('id, email, full_name')
+          .in('id', userIds);
+
+        const userMap = new Map((usersData || []).map((u: any) => [u.id, u]));
+        const enriched = logs.map((l) => ({
+          ...l,
+          user: l.user_id ? userMap.get(l.user_id) || null : null,
+        }));
+        setAuditLogs(enriched);
+      } else {
+        setAuditLogs(logs);
+      }
+    } catch (err) {
+      console.error('Error loading audit logs:', err);
+    } finally {
+      setLoadingAuditLogs(false);
+    }
+  }, [activeCompany, supabase]);
+
+  useEffect(() => {
+    if (activeTab === 'audit') {
+      loadAuditLogs();
+    }
+  }, [activeTab, loadAuditLogs]);
+
+  const filteredAuditLogs = useMemo(() => {
+    return auditLogs.filter((log) => {
+      if (auditEntityTypeFilter !== 'ALL' && log.entity_type !== auditEntityTypeFilter) {
+        return false;
+      }
+      if (auditSearchQuery.trim()) {
+        const q = auditSearchQuery.toLowerCase().trim();
+        const userMatch =
+          log.user?.email?.toLowerCase().includes(q) ||
+          log.user?.full_name?.toLowerCase().includes(q) ||
+          false;
+        const actionMatch = (log.action || '').toLowerCase().includes(q);
+        const descMatch = getAuditReadableDescription(log).toLowerCase().includes(q);
+        const entityIdMatch = (log.entity_id || '').toLowerCase().includes(q);
+        return userMatch || actionMatch || descMatch || entityIdMatch;
+      }
+      return true;
+    });
+  }, [auditLogs, auditEntityTypeFilter, auditSearchQuery]);
+
   const handleTabSwitch = (tab: SettingsTab) => {
     setActiveTab(tab);
     router.push(`/settings/${tab}`, { scroll: false });
@@ -311,6 +397,21 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
         .eq('company_id', activeCompany.id);
 
       if (error) throw error;
+
+      // Silently record audit event
+      await logAuditEvent({
+        companyId: activeCompany.id,
+        action: 'ROLE_CHANGED',
+        entityType: 'MEMBER',
+        entityId: member.id,
+        userId: user?.id,
+        details: {
+          target_user_name: member.user?.full_name || member.user?.email,
+          target_email: member.user?.email,
+          old_role: member.role,
+          new_role: newRole,
+        },
+      });
 
       setMembers((prev) =>
         prev.map((m) => (m.id === member.id ? { ...m, role: newRole } : m))
@@ -445,6 +546,18 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
 
         if (insertError) throw insertError;
 
+        // Silently record audit event
+        await logAuditEvent({
+          companyId: activeCompany.id,
+          action: 'MEMBER_INVITED',
+          entityType: 'MEMBER',
+          userId: user?.id,
+          details: {
+            invited_email: normalizedEmail,
+            role: inviteRole,
+          },
+        });
+
         if (newMember) {
           setMembers((prev) => [...prev, newMember]);
         } else {
@@ -487,6 +600,19 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
         }
 
         setGeneratedInviteLink(inviteUrl);
+
+        // Silently record audit event
+        await logAuditEvent({
+          companyId: activeCompany.id,
+          action: 'MEMBER_INVITED',
+          entityType: 'MEMBER',
+          userId: user?.id,
+          details: {
+            invited_email: normalizedEmail,
+            role: inviteRole,
+          },
+        });
+
         setToast({
           id: String(Date.now()),
           type: 'success',
@@ -677,6 +803,19 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
               <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold uppercase bg-zinc-900 text-white">
                 {subscription.plan.name}
               </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleTabSwitch('audit')}
+              className={`pb-3 text-xs font-medium border-b-2 transition-all flex items-center gap-2 shrink-0 cursor-pointer ${
+                activeTab === 'audit'
+                  ? 'border-zinc-900 text-zinc-900'
+                  : 'border-transparent text-zinc-500 hover:text-zinc-800 hover:border-zinc-300'
+              }`}
+            >
+              <History className="w-3.5 h-3.5" />
+              <span>Auditoría</span>
             </button>
           </div>
         </div>
@@ -1381,6 +1520,220 @@ export function SettingsView({ initialTab = 'general' }: SettingsViewProps) {
                 </button>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* ============================================================ */}
+        {/* PESTAÑA 4: REGISTRO DE AUDITORÍA (/settings/audit)           */}
+        {/* ============================================================ */}
+        {activeTab === 'audit' && (
+          <div className="bg-white rounded-2xl border border-zinc-200/80 shadow-xs overflow-hidden space-y-0">
+            {/* Header */}
+            <div className="p-6 border-b border-zinc-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-zinc-50/40">
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-sm font-semibold text-zinc-900">
+                    Registro de Auditoría y Trazabilidad
+                  </h2>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono-numbers font-medium bg-zinc-200/70 text-zinc-700">
+                    {filteredAuditLogs.length} eventos
+                  </span>
+                </div>
+                <p className="text-xs text-zinc-500 mt-0.5">
+                  Historial cronológico inmutable de facturación, egresos, invitaciones de equipo y conciliaciones bancarias
+                </p>
+              </div>
+
+              <button
+                type="button"
+                disabled={loadingAuditLogs}
+                onClick={loadAuditLogs}
+                className="px-3 py-1.5 rounded-lg border border-zinc-200 bg-white hover:bg-zinc-50 text-xs font-medium text-zinc-700 flex items-center gap-1.5 transition-colors shadow-2xs self-start sm:self-auto cursor-pointer"
+              >
+                <RefreshCw
+                  className={`w-3.5 h-3.5 text-zinc-500 ${
+                    loadingAuditLogs ? 'animate-spin text-zinc-900' : ''
+                  }`}
+                />
+                <span>Actualizar Historial</span>
+              </button>
+            </div>
+
+            {/* Filter Bar */}
+            <div className="p-4 border-b border-zinc-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white">
+              {/* Search */}
+              <div className="relative w-full sm:w-80">
+                <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-zinc-400" />
+                <input
+                  type="text"
+                  value={auditSearchQuery}
+                  onChange={(e) => setAuditSearchQuery(e.target.value)}
+                  placeholder="Buscar por usuario, detalle o factura..."
+                  className="w-full pl-8 pr-3 py-1.5 text-xs rounded-lg border border-zinc-200 bg-zinc-50/60 focus:bg-white focus:outline-none focus:border-zinc-900"
+                />
+              </div>
+
+              {/* Entity Filter Pills */}
+              <div className="flex items-center gap-1 overflow-x-auto pb-1 sm:pb-0">
+                <span className="text-[11px] text-zinc-400 mr-1 flex items-center gap-1 shrink-0">
+                  <Filter className="w-3 h-3" />
+                  Filtrar:
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setAuditEntityTypeFilter('ALL')}
+                  className={`px-2.5 py-1 rounded-md text-[11px] transition-colors shrink-0 ${
+                    auditEntityTypeFilter === 'ALL'
+                      ? 'bg-zinc-900 text-white font-medium'
+                      : 'text-zinc-600 hover:bg-zinc-100'
+                  }`}
+                >
+                  Todos
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAuditEntityTypeFilter('INVOICE')}
+                  className={`px-2.5 py-1 rounded-md text-[11px] transition-colors shrink-0 ${
+                    auditEntityTypeFilter === 'INVOICE'
+                      ? 'bg-zinc-900 text-white font-medium'
+                      : 'text-zinc-600 hover:bg-zinc-100'
+                  }`}
+                >
+                  Facturas
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAuditEntityTypeFilter('EXPENSE')}
+                  className={`px-2.5 py-1 rounded-md text-[11px] transition-colors shrink-0 ${
+                    auditEntityTypeFilter === 'EXPENSE'
+                      ? 'bg-zinc-900 text-white font-medium'
+                      : 'text-zinc-600 hover:bg-zinc-100'
+                  }`}
+                >
+                  Gastos
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAuditEntityTypeFilter('MEMBER')}
+                  className={`px-2.5 py-1 rounded-md text-[11px] transition-colors shrink-0 ${
+                    auditEntityTypeFilter === 'MEMBER'
+                      ? 'bg-zinc-900 text-white font-medium'
+                      : 'text-zinc-600 hover:bg-zinc-100'
+                  }`}
+                >
+                  Equipo
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAuditEntityTypeFilter('BANK_TRANSACTION')}
+                  className={`px-2.5 py-1 rounded-md text-[11px] transition-colors shrink-0 ${
+                    auditEntityTypeFilter === 'BANK_TRANSACTION'
+                      ? 'bg-zinc-900 text-white font-medium'
+                      : 'text-zinc-600 hover:bg-zinc-100'
+                  }`}
+                >
+                  Bancos
+                </button>
+              </div>
+            </div>
+
+            {/* Audit Table */}
+            {loadingAuditLogs ? (
+              <div className="py-16 flex flex-col items-center justify-center text-zinc-400 text-xs gap-2">
+                <Loader2 className="w-5 h-5 animate-spin text-zinc-600" />
+                <span>Cargando registros de auditoría...</span>
+              </div>
+            ) : filteredAuditLogs.length === 0 ? (
+              <div className="py-16 text-center p-6 space-y-2">
+                <div className="w-10 h-10 rounded-full bg-zinc-100 text-zinc-500 flex items-center justify-center mx-auto mb-2">
+                  <History className="w-5 h-5" />
+                </div>
+                <p className="text-sm font-semibold text-zinc-900">
+                  No hay registros de auditoría encontrados
+                </p>
+                <p className="text-xs text-zinc-500 max-w-sm mx-auto">
+                  {auditSearchQuery || auditEntityTypeFilter !== 'ALL'
+                    ? 'No se encontraron eventos con los filtros aplicados. Intenta restablecer la búsqueda.'
+                    : 'A medida que se emitan facturas, registren egresos o se concilien movimientos bancarios, quedarán registrados aquí con trazabilidad completa.'}
+                </p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-zinc-50/80 border-b border-zinc-200/80 text-zinc-500 font-medium">
+                      <th className="py-3 px-4 whitespace-nowrap">Fecha y Hora</th>
+                      <th className="py-3 px-4">Usuario Responsable</th>
+                      <th className="py-3 px-4">Acción</th>
+                      <th className="py-3 px-4">Entidad</th>
+                      <th className="py-3 px-4 min-w-[280px]">Detalle de la Operación</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-zinc-100">
+                    {filteredAuditLogs.map((log) => {
+                      const badge = getAuditActionBadge(log.action);
+                      const description = getAuditReadableDescription(log);
+                      const userDisplayName =
+                        log.user?.full_name || log.user?.email || 'Usuario del Sistema';
+                      const userInitial = userDisplayName.charAt(0).toUpperCase();
+
+                      return (
+                        <tr
+                          key={log.id}
+                          className="hover:bg-zinc-50/60 transition-colors"
+                        >
+                          {/* 1. Fecha y Hora */}
+                          <td className="py-3.5 px-4 font-mono-numbers text-zinc-600 whitespace-nowrap text-[11px]">
+                            {formatDateTime(log.created_at)}
+                          </td>
+
+                          {/* 2. Usuario */}
+                          <td className="py-3.5 px-4 whitespace-nowrap">
+                            <div className="flex items-center gap-2">
+                              <div className="w-6 h-6 rounded-full bg-zinc-200 text-zinc-800 font-bold text-[10px] flex items-center justify-center shrink-0">
+                                {userInitial}
+                              </div>
+                              <div className="min-w-0">
+                                <span className="font-medium text-zinc-900 block truncate max-w-[150px]">
+                                  {userDisplayName}
+                                </span>
+                                {log.user?.email && log.user.full_name && (
+                                  <span className="text-[10px] text-zinc-400 block truncate max-w-[150px]">
+                                    {log.user.email}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+
+                          {/* 3. Acción */}
+                          <td className="py-3.5 px-4 whitespace-nowrap">
+                            <span
+                              className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium border ${badge.badgeClass}`}
+                            >
+                              <span className={`w-1.5 h-1.5 rounded-full ${badge.dotClass}`} />
+                              {badge.label}
+                            </span>
+                          </td>
+
+                          {/* 4. Entidad */}
+                          <td className="py-3.5 px-4 whitespace-nowrap">
+                            <span className="px-2 py-0.5 rounded text-[10px] font-mono font-medium bg-zinc-100 text-zinc-700 border border-zinc-200">
+                              {log.entity_type}
+                            </span>
+                          </td>
+
+                          {/* 5. Detalle Legible */}
+                          <td className="py-3.5 px-4 text-zinc-800">
+                            <p className="text-xs leading-relaxed">{description}</p>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
       </main>

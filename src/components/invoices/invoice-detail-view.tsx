@@ -8,6 +8,7 @@ import { createClient } from '@/lib/supabase/client';
 import { Company, Customer, Invoice, InvoiceItem, InvoiceStatus } from '@/types/database';
 import { formatCurrency, formatDate, getStatusBadge } from '@/lib/utils';
 import { generateInvoicePdf } from '@/lib/pdf/generate-invoice-pdf';
+import { logAuditEvent } from '@/lib/audit';
 import {
   ArrowLeft,
   Download,
@@ -160,6 +161,25 @@ export function InvoiceDetailView({ invoiceId }: InvoiceDetailViewProps) {
 
       if (data) {
         setInvoice((prev) => (prev ? { ...prev, status: data.status as InvoiceStatus } : prev));
+
+        // Silently record audit log
+        if (newStatus === 'PAID' || newStatus === 'VOID') {
+          await logAuditEvent({
+            companyId: activeCompany.id,
+            action: newStatus === 'PAID' ? 'INVOICE_PAID' : 'INVOICE_VOIDED',
+            entityType: 'INVOICE',
+            entityId: invoice.id,
+            userId: user?.id,
+            details: {
+              invoice_number: invoice.invoice_number,
+              customer_name: invoice.customer?.name,
+              total: invoice.total,
+              currency: invoice.currency,
+              new_status: newStatus,
+            },
+          });
+        }
+
         setToast({
           id: String(Date.now()),
           type: 'success',

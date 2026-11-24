@@ -10,6 +10,7 @@ import {
   formatDate,
   getExpenseCategoryBadge,
 } from '@/lib/utils';
+import { logAuditEvent } from '@/lib/audit';
 import {
   X,
   Wallet,
@@ -182,6 +183,20 @@ export function MatchExpenseModal({
 
       if (txErr) throw txErr;
 
+      // Silently record audit event
+      await logAuditEvent({
+        companyId: activeCompany.id,
+        action: 'TRANSACTION_MATCHED',
+        entityType: 'BANK_TRANSACTION',
+        entityId: transaction.id,
+        details: {
+          description: transaction.description,
+          amount: transaction.amount,
+          currency,
+          matched_vendor: matchedExpense.vendor_name,
+        },
+      });
+
       onMatched(transaction.id, matchedExpense);
       onClose();
     } catch (err: unknown) {
@@ -236,6 +251,33 @@ export function MatchExpenseModal({
         .eq('id', transaction.id);
 
       if (txErr) throw txErr;
+
+      // Silently record audit events
+      await logAuditEvent({
+        companyId: activeCompany.id,
+        action: 'EXPENSE_CREATED',
+        entityType: 'EXPENSE',
+        entityId: createdExpense.id,
+        details: {
+          vendor_name: vendorName.trim(),
+          category,
+          amount: targetAmount,
+          currency,
+        },
+      });
+
+      await logAuditEvent({
+        companyId: activeCompany.id,
+        action: 'TRANSACTION_MATCHED',
+        entityType: 'BANK_TRANSACTION',
+        entityId: transaction.id,
+        details: {
+          description: transaction.description,
+          amount: transaction.amount,
+          currency,
+          matched_vendor: vendorName.trim(),
+        },
+      });
 
       onMatched(transaction.id, createdExpense as Expense);
       onClose();

@@ -8,6 +8,8 @@ import { createClient } from '@/lib/supabase/client';
 import { Customer, InvoiceStatus, TaxBreakdown } from '@/types/database';
 import { formatCurrency } from '@/lib/utils';
 import { getEffectiveSubscription } from '@/lib/billing/subscription-service';
+import { fetchExchangeRate, formatExchangeRateDisplay } from '@/lib/currency';
+import { logAuditEvent } from '@/lib/audit';
 import {
   ArrowLeft,
   Plus,
@@ -27,6 +29,8 @@ import {
   Lock,
   Zap,
   X,
+  RefreshCw,
+  Sparkles,
 } from 'lucide-react';
 import { CreateCustomerModal } from '@/components/modals/create-customer-modal';
 import { Toast, ToastMessage } from '@/components/ui/toast';
@@ -75,6 +79,34 @@ export function NewInvoiceView() {
     activeCompany?.base_currency || 'COP'
   );
   const [exchangeRateToBase, setExchangeRateToBase] = useState<number>(1);
+  const [trmLoading, setTrmLoading] = useState<boolean>(false);
+  const [trmInfo, setTrmInfo] = useState<string | null>(null);
+
+  // Automatically fetch live TRM when currency differs from base currency
+  const fetchLiveRate = React.useCallback(async (curr: 'COP' | 'USD', baseCurr: 'COP' | 'USD') => {
+    if (curr === baseCurr) {
+      setExchangeRateToBase(1);
+      setTrmInfo(null);
+      return;
+    }
+
+    setTrmLoading(true);
+    try {
+      const res = await fetchExchangeRate(curr, baseCurr);
+      setExchangeRateToBase(res.rate);
+      const display = formatExchangeRateDisplay(curr, baseCurr, res.rate);
+      setTrmInfo(`${display}${res.isLive ? ' (TRM oficial en vivo)' : ' (Tasa de referencia)'}`);
+    } catch (err) {
+      console.warn('Error fetching TRM:', err);
+    } finally {
+      setTrmLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!activeCompany?.base_currency) return;
+    fetchLiveRate(currency, activeCompany.base_currency);
+  }, [currency, activeCompany?.base_currency, fetchLiveRate]);
 
   // Dynamic Line Items
   const [items, setItems] = useState<LineItemForm[]>([
@@ -386,6 +418,24 @@ export function NewInvoiceView() {
 
       if (itemsError) throw itemsError;
 
+      // Log audit event silently
+      const customerObj = customers.find((c) => c.id === selectedCustomerId);
+      await logAuditEvent({
+        companyId: activeCompany.id,
+        action: 'INVOICE_CREATED',
+        entityType: 'INVOICE',
+        entityId: createdInvoice.id,
+        userId: user.id,
+        details: {
+          invoice_number: createdInvoice.invoice_number,
+          customer_name: customerObj?.name || 'Cliente',
+          status: targetStatus,
+          currency,
+          total: grandTotal,
+          exchange_rate_to_base: Number(exchangeRateToBase) || 1,
+        },
+      });
+
       // 3. Redirect to /invoices with confirmation toast parameter
       const createdParam = targetStatus === 'ISSUED' ? 'issued' : 'draft';
       router.push(
@@ -680,22 +730,51 @@ export function NewInvoiceView() {
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-zinc-700 mb-1.5">
-                  Tasa de Cambio (Base {activeCompany?.base_currency})
-                </label>
-                <input
-                  type="number"
-                  min="0.0001"
-                  step="any"
-                  disabled={currency === activeCompany?.base_currency}
-                  value={
-                    currency === activeCompany?.base_currency ? 1 : exchangeRateToBase
-                  }
-                  onChange={(e) =>
-                    setExchangeRateToBase(parseFloat(e.target.value) || 1)
-                  }
-                  className="w-full px-3 py-2 text-xs font-mono-numbers bg-zinc-50/70 border border-zinc-200 rounded-xl text-zinc-900 disabled:opacity-60 focus:bg-white focus:outline-none focus:border-zinc-900"
-                />
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-medium text-zinc-700">
+                    {currency !== activeCompany?.base_currency
+                      ? `Tasa de Cambio / TRM (1 ${currency} = X ${activeCompany?.base_currency})`
+                      : `Tasa de Cambio (Moneda Base ${activeCompany?.base_currency})`}
+                  </label>
+                  {currency !== activeCompany?.base_currency && (
+                    <button
+                      type="button"
+                      disabled={trmLoading}
+                      onClick={() =>
+                        activeCompany?.base_currency &&
+                        fetchLiveRate(currency, activeCompany.base_currency)
+                      }
+                      title="Consultar TRM oficial en tiempo real"
+                      className="text-[10px] text-zinc-500 hover:text-zinc-900 flex items-center gap-1 cursor-pointer transition-colors"
+                    >
+                      <RefreshCw
+                        className={`w-3 h-3 ${trmLoading ? 'animate-spin text-indigo-600' : ''}`}
+                      />
+                      <span>Actualizar TRM</span>
+                    </button>
+                  )}
+                </div>
+                <div className="relative">
+                  <input
+                    type="number"
+                    min="0.000001"
+                    step="any"
+                    disabled={currency === activeCompany?.base_currency}
+                    value={
+                      currency === activeCompany?.base_currency ? 1 : exchangeRateToBase
+                    }
+                    onChange={(e) =>
+                      setExchangeRateToBase(parseFloat(e.target.value) || 1)
+                    }
+                    className="w-full px-3 py-2 text-xs font-mono-numbers bg-zinc-50/70 border border-zinc-200 rounded-xl text-zinc-900 disabled:opacity-60 focus:bg-white focus:outline-none focus:border-zinc-900"
+                  />
+                </div>
+                {currency !== activeCompany?.base_currency && trmInfo && (
+                  <p className="text-[10px] text-zinc-500 mt-1 flex items-center gap-1">
+                    <Sparkles className="w-2.5 h-2.5 text-amber-500" />
+                    <span>{trmInfo}</span>
+                  </p>
+                )}
               </div>
             </div>
           </div>
@@ -1094,6 +1173,21 @@ export function NewInvoiceView() {
                   {formatCurrency(grandTotal, currency)}
                 </div>
               </div>
+
+              {/* Multi-Currency Base Equivalent Note */}
+              {activeCompany && currency !== activeCompany.base_currency && (
+                <div className="mt-2.5 p-2.5 rounded-xl bg-zinc-50 border border-zinc-200/80 flex items-center justify-between text-xs font-mono-numbers">
+                  <span className="text-zinc-500 text-[11px]">
+                    Equivalente en moneda base ({activeCompany.base_currency}):
+                  </span>
+                  <span className="font-bold text-zinc-900">
+                    {formatCurrency(
+                      grandTotal * (Number(exchangeRateToBase) || 1),
+                      activeCompany.base_currency
+                    )}
+                  </span>
+                </div>
+              )}
 
               {/* Bottom Action Buttons inside Summary */}
               <div className="pt-4 grid grid-cols-2 gap-2.5">

@@ -5,6 +5,7 @@ import { useAuth } from '@/context/auth-context';
 import { createClient } from '@/lib/supabase/client';
 import { Expense, ExpenseCategory } from '@/types/database';
 import { EXPENSE_CATEGORY_OPTIONS, formatCurrency } from '@/lib/utils';
+import { logAuditEvent } from '@/lib/audit';
 import {
   X,
   Wallet,
@@ -159,6 +160,22 @@ export function CreateExpenseModal({
 
         if (error) throw error;
         onExpenseSaved(data as Expense, false);
+
+        // Silently record audit event
+        await logAuditEvent({
+          companyId: activeCompany.id,
+          action: 'EXPENSE_CREATED',
+          entityType: 'EXPENSE',
+          entityId: data.id,
+          userId: user.id,
+          details: {
+            vendor_name: vendorName.trim(),
+            category,
+            amount: Number(numericAmount.toFixed(2)),
+            currency,
+            notes: notes.trim() || undefined,
+          },
+        });
       }
 
       onClose();

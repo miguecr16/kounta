@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/client';
 import { Header } from '@/components/layout/header';
 import { Invoice, Customer, Expense } from '@/types/database';
 import { formatCurrency, formatDate, getStatusBadge } from '@/lib/utils';
+import { getInvoiceAmountInBase } from '@/lib/currency';
 import {
   Clock,
   CheckCircle2,
@@ -135,14 +136,14 @@ export default function DashboardPage() {
     );
 
     const totalEmittedAmount = activeEmittedInvoices.reduce(
-      (acc, inv) => acc + (Number(inv.total) || 0),
+      (acc, inv) => acc + getInvoiceAmountInBase(inv, currency),
       0
     );
 
     // 1. Revenue Paid (Mes en curso + acumulado)
     const paidInvoicesAll = invoices.filter((inv) => inv.status === 'PAID');
     const totalPaidAllTime = paidInvoicesAll.reduce(
-      (acc, inv) => acc + (Number(inv.total) || 0),
+      (acc, inv) => acc + getInvoiceAmountInBase(inv, currency),
       0
     );
 
@@ -151,7 +152,7 @@ export default function DashboardPage() {
       return dateRef.startsWith(currentYearMonth);
     });
     const revenuePaidThisMonth = paidThisMonthInvoices.reduce(
-      (acc, inv) => acc + (Number(inv.total) || 0),
+      (acc, inv) => acc + getInvoiceAmountInBase(inv, currency),
       0
     );
 
@@ -160,7 +161,7 @@ export default function DashboardPage() {
       (inv) => inv.status === 'ISSUED' || inv.status === 'PARTIAL_PAID'
     );
     const accountsReceivable = issuedInvoices.reduce(
-      (acc, inv) => acc + (Number(inv.total) || 0),
+      (acc, inv) => acc + getInvoiceAmountInBase(inv, currency),
       0
     );
 
@@ -172,7 +173,7 @@ export default function DashboardPage() {
         inv.due_date < todayStr
     );
     const overdueAmount = overdueInvoices.reduce(
-      (acc, inv) => acc + (Number(inv.total) || 0),
+      (acc, inv) => acc + getInvoiceAmountInBase(inv, currency),
       0
     );
 
@@ -215,7 +216,7 @@ export default function DashboardPage() {
       netProfitThisMonth,
       netProfitAllTime,
     };
-  }, [invoices, expenses]);
+  }, [invoices, expenses, currency]);
 
   // Last 5 emitted transactions
   const recentTransactions = useMemo(() => {

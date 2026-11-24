@@ -31,6 +31,23 @@ export function formatDate(dateString: string | null | undefined): string {
   }
 }
 
+export function formatDateTime(dateString: string | null | undefined): string {
+  if (!dateString) return '-';
+  try {
+    const date = new Date(dateString);
+    return new Intl.DateTimeFormat('es-CO', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    }).format(date);
+  } catch {
+    return dateString;
+  }
+}
+
 export function getStatusBadge(status: InvoiceStatus) {
   switch (status) {
     case 'PAID':

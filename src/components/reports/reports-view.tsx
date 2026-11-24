@@ -13,6 +13,7 @@ import {
   formatDate,
   getExpenseCategoryBadge,
 } from '@/lib/utils';
+import { getInvoiceAmountInBase } from '@/lib/currency';
 import { Toast, ToastMessage } from '@/components/ui/toast';
 import {
   Calendar,
@@ -280,12 +281,12 @@ export function ReportsView() {
   // P&L (Profit & Loss / Estado de Resultados) Aggregation
   const pnlSummary = useMemo(() => {
     const totalRevenueBilled = periodInvoices.reduce(
-      (acc, inv) => acc + (Number(inv.total) || 0),
+      (acc, inv) => acc + getInvoiceAmountInBase(inv, currency),
       0
     );
     const totalRevenuePaid = periodInvoices
       .filter((inv) => inv.status === 'PAID')
-      .reduce((acc, inv) => acc + (Number(inv.total) || 0), 0);
+      .reduce((acc, inv) => acc + getInvoiceAmountInBase(inv, currency), 0);
 
     const totalExpenses = periodExpenses.reduce(
       (acc, exp) => acc + (Number(exp.amount) || 0),
@@ -351,7 +352,7 @@ export function ReportsView() {
         outstandingBalance: 0,
       };
 
-      const total = Number(inv.total) || 0;
+      const total = getInvoiceAmountInBase(inv, currency);
       existing.invoiceCount += 1;
       existing.totalBilled += total;
 
@@ -403,9 +404,13 @@ export function ReportsView() {
     const usJurisdictionMap = new Map<string, UsJurisdictionTaxRow>();
 
     periodInvoices.forEach((inv) => {
-      const sub = Number(inv.subtotal) || 0;
-      const taxTot = Number(inv.tax_total) || 0;
-      const tot = Number(inv.total) || 0;
+      const rate =
+        inv.currency && inv.currency.toUpperCase() !== currency.toUpperCase()
+          ? Number(inv.exchange_rate_to_base) || 1
+          : 1;
+      const sub = (Number(inv.subtotal) || 0) * rate;
+      const taxTot = (Number(inv.tax_total) || 0) * rate;
+      const tot = (Number(inv.total) || 0) * rate;
       const tb: TaxBreakdown = (inv.tax_breakdown as TaxBreakdown) || {};
 
       subtotalSum += sub;
@@ -413,15 +418,16 @@ export function ReportsView() {
 
       if (isColombia) {
         // Colombia DIAN breakdown
-        const iva =
+        const rawIva =
           tb.iva_total !== undefined
             ? Number(tb.iva_total)
             : tb.line_taxes_total !== undefined
             ? Number(tb.line_taxes_total)
-            : Math.max(0, taxTot);
+            : Math.max(0, Number(inv.tax_total) || 0);
+        const iva = rawIva * rate;
 
-        const retefuente = Number(tb.retefuente_amount) || 0;
-        const reteica = Number(tb.reteica_amount) || 0;
+        const retefuente = (Number(tb.retefuente_amount) || 0) * rate;
+        const reteica = (Number(tb.reteica_amount) || 0) * rate;
 
         ivaTotalSum += iva;
         retefuenteSum += retefuente;
@@ -431,9 +437,10 @@ export function ReportsView() {
         if (reteica > 0) reteicaCount += 1;
       } else {
         // United States Sales Tax breakdown
-        const salesTax =
+        const rawSalesTax =
           (Number(tb.sales_tax_amount) || 0) + (Number(tb.line_taxes_total) || 0) ||
-          Math.max(0, taxTot);
+          Math.max(0, Number(inv.tax_total) || 0);
+        const salesTax = rawSalesTax * rate;
 
         usSalesTaxSum += salesTax;
 
